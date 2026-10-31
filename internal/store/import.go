@@ -522,7 +522,35 @@ func (s *Store) GetImport(ctx context.Context, p Project, id int64) (*ImportJobR
 
 // DiffImport lists classified rows (and missing workflows) of a job. actions filters by action
 // (empty = all). Applied and rolled back jobs report the stored actions without key changes.
-func (s *Store) DiffImport(ctx context.Context, p Project, id int64, actions map[string]bool, offset, size int) ([]DiffRow, int, error) {
+func (s *Store) DiffImport(ctx context.Context, p Project, id int64, actions map[string]bool, pageToken string, size int) ([]DiffRow, string, error) {
+	offset := 0
+	if pageToken != "" {
+		_, n, err := openPageToken(pageToken, diffBinding(p, id, actions))
+		if err != nil {
+			return nil, "", err
+		}
+		offset = int(n)
+	}
+	rows, n, err := s.diffImport(ctx, p, id, actions, offset, size)
+	if err != nil || n == 0 {
+		return rows, "", err
+	}
+	return rows, sealPageToken("d", int64(n), diffBinding(p, id, actions)), nil
+}
+
+// diffBinding ties a diff page token to its project, job and action filter.
+func diffBinding(p Project, id int64, actions map[string]bool) string {
+	var as []string
+	for a, on := range actions {
+		if on {
+			as = append(as, a)
+		}
+	}
+	sort.Strings(as)
+	return fmt.Sprintf("diff\x00%d\x00%d\x00%s", p.ID, id, strings.Join(as, ","))
+}
+
+func (s *Store) diffImport(ctx context.Context, p Project, id int64, actions map[string]bool, offset, size int) ([]DiffRow, int, error) {
 	b, err := getBatch(ctx, s.DB, p.ID, id, false)
 	if err != nil {
 		return nil, 0, internalErr(err)

@@ -70,7 +70,7 @@ Server (`openetl-server`):
 | `OPENETL_PUBLIC_URL` | derived from the request | base of signed blob URLs |
 | `OPENETL_TRUST_PROXY` | off | `1` honours `X-Forwarded-*` |
 | `OPENETL_ALLOW_GLOBAL_CONFIG` | off | `1` allows config updates on multi-project instances |
-| `OPENETL_PAGE_TOKEN_KEY` | random per process | secret that signs page tokens; set the same value on every instance and across restarts |
+| `OPENETL_PAGE_TOKEN_KEY` | random per process | secret that signs every page token (lists, members, tokens, import diff, query); multi-instance deployments must set the same value on every instance (a token from another instance is `INVALID_PAGE_TOKEN`), and keep it across restarts |
 | `OPENETL_ACCESS_LOG` | on | `off` disables the JSON access-log line per request on stderr |
 | `OPENETL_METRICS_TOKEN` | unset | bearer token that lets a non-loopback caller read `/metrics` (loopback needs none) |
 | `OPENETL_STORAGE` | `fs` | attachment backend: `fs` or `s3` |

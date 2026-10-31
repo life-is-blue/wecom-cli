@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,26 @@ func TestPresignedSamePortGetsNoTokenAcrossSchemes(t *testing.T) {
 	dst := t.TempDir() + "/x"
 	if code, _, errs := e.run("", "attachment", "get", "WF-000123", "at-000009", "-o", dst); code != 0 || storageAuth != "" {
 		t.Fatalf("%d %s auth=%q", code, errs, storageAuth)
+	}
+	// downloaded evidence is private to the user
+	if st, err := os.Stat(dst); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("downloaded file mode: %v %v", st, err)
+	}
+}
+
+func TestOutputFileIsPrivate(t *testing.T) {
+	f := newFake(t)
+	e := newEnv(t, f)
+	f.h = func(w http.ResponseWriter, r *http.Request, _ string) bool {
+		io.WriteString(w, `{"workflows":[]}`)
+		return true
+	}
+	dst := t.TempDir() + "/out.json"
+	if code, _, errs := e.run("", "workflow", "list", "-o", dst); code != 0 {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if st, err := os.Stat(dst); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("-o file mode: %v %v", st, err)
 	}
 }
 

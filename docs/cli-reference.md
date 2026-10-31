@@ -407,9 +407,8 @@ Usage:
   openetl query "<SELECT ...>" [--page-size N] [--page-count N] [flags]
 
 Flags:
-      --as-of string        point-in-time view (RFC 3339)
   -h, --help                help for query
-      --page-size int       rows per page (max 10000)
+      --page-size int       rows per page (max 1000)
       --page-token string   continue from a next_page_token
 ```
 
@@ -502,7 +501,7 @@ Flags:
       --dry-run                  validate only (validate_only); nothing is written
       --etag string              expected etag of the target (optimistic concurrency)
   -h, --help                     help for create
-      --id string                optional id (lowercase slug); server-assigned when omitted
+      --id string                reserved: client-assigned ids are rejected with CLIENT_ID_UNSUPPORTED; ids are server-assigned
       --label stringArray        label key=value (repeatable, filterable)
       --name string              display name
       --note string              free-text note recorded with the change
@@ -677,7 +676,7 @@ Flags:
       --dry-run                  validate only (validate_only); nothing is written
       --etag string              expected etag of the target (optimistic concurrency)
   -h, --help                     help for create
-      --id string                optional id (lowercase slug); server-assigned when omitted
+      --id string                reserved: client-assigned ids are rejected with CLIENT_ID_UNSUPPORTED; ids are server-assigned
       --label stringArray        label key=value (repeatable, filterable)
       --name string              display name
       --note string              free-text note recorded with the change

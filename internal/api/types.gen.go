@@ -185,19 +185,22 @@ func (e ConfigRulesSide) Valid() bool {
 
 // Defines values for DiffImportJobResponseRowsChangesKind.
 const (
-	DiffImportJobResponseRowsChangesKindConflict DiffImportJobResponseRowsChangesKind = "conflict"
-	DiffImportJobResponseRowsChangesKindFill     DiffImportJobResponseRowsChangesKind = "fill"
-	DiffImportJobResponseRowsChangesKindSource   DiffImportJobResponseRowsChangesKind = "source"
+	DiffImportJobResponseRowsChangesKindCONFLICT        DiffImportJobResponseRowsChangesKind = "CONFLICT"
+	DiffImportJobResponseRowsChangesKindFILL            DiffImportJobResponseRowsChangesKind = "FILL"
+	DiffImportJobResponseRowsChangesKindKINDUNSPECIFIED DiffImportJobResponseRowsChangesKind = "KIND_UNSPECIFIED"
+	DiffImportJobResponseRowsChangesKindSOURCE          DiffImportJobResponseRowsChangesKind = "SOURCE"
 )
 
 // Valid indicates whether the value is a known member of the DiffImportJobResponseRowsChangesKind enum.
 func (e DiffImportJobResponseRowsChangesKind) Valid() bool {
 	switch e {
-	case DiffImportJobResponseRowsChangesKindConflict:
+	case DiffImportJobResponseRowsChangesKindCONFLICT:
 		return true
-	case DiffImportJobResponseRowsChangesKindFill:
+	case DiffImportJobResponseRowsChangesKindFILL:
 		return true
-	case DiffImportJobResponseRowsChangesKindSource:
+	case DiffImportJobResponseRowsChangesKindKINDUNSPECIFIED:
+		return true
+	case DiffImportJobResponseRowsChangesKindSOURCE:
 		return true
 	default:
 		return false
@@ -314,46 +317,46 @@ func (e Health) Valid() bool {
 
 // Defines values for ImportAction.
 const (
-	ACTIONUNSPECIFIED ImportAction = "ACTION_UNSPECIFIED"
-	CHANGED           ImportAction = "CHANGED"
-	CONFLICT          ImportAction = "CONFLICT"
-	MISSING           ImportAction = "MISSING"
-	NEW               ImportAction = "NEW"
-	SUSPECT           ImportAction = "SUSPECT"
-	TASKCHANGED       ImportAction = "TASK_CHANGED"
-	TASKCONFLICT      ImportAction = "TASK_CONFLICT"
-	TASKMISSING       ImportAction = "TASK_MISSING"
-	TASKNEW           ImportAction = "TASK_NEW"
-	TASKUNCHANGED     ImportAction = "TASK_UNCHANGED"
-	UNCHANGED         ImportAction = "UNCHANGED"
+	ImportActionACTIONUNSPECIFIED ImportAction = "ACTION_UNSPECIFIED"
+	ImportActionCHANGED           ImportAction = "CHANGED"
+	ImportActionCONFLICT          ImportAction = "CONFLICT"
+	ImportActionMISSING           ImportAction = "MISSING"
+	ImportActionNEW               ImportAction = "NEW"
+	ImportActionSUSPECT           ImportAction = "SUSPECT"
+	ImportActionTASKCHANGED       ImportAction = "TASK_CHANGED"
+	ImportActionTASKCONFLICT      ImportAction = "TASK_CONFLICT"
+	ImportActionTASKMISSING       ImportAction = "TASK_MISSING"
+	ImportActionTASKNEW           ImportAction = "TASK_NEW"
+	ImportActionTASKUNCHANGED     ImportAction = "TASK_UNCHANGED"
+	ImportActionUNCHANGED         ImportAction = "UNCHANGED"
 )
 
 // Valid indicates whether the value is a known member of the ImportAction enum.
 func (e ImportAction) Valid() bool {
 	switch e {
-	case ACTIONUNSPECIFIED:
+	case ImportActionACTIONUNSPECIFIED:
 		return true
-	case CHANGED:
+	case ImportActionCHANGED:
 		return true
-	case CONFLICT:
+	case ImportActionCONFLICT:
 		return true
-	case MISSING:
+	case ImportActionMISSING:
 		return true
-	case NEW:
+	case ImportActionNEW:
 		return true
-	case SUSPECT:
+	case ImportActionSUSPECT:
 		return true
-	case TASKCHANGED:
+	case ImportActionTASKCHANGED:
 		return true
-	case TASKCONFLICT:
+	case ImportActionTASKCONFLICT:
 		return true
-	case TASKMISSING:
+	case ImportActionTASKMISSING:
 		return true
-	case TASKNEW:
+	case ImportActionTASKNEW:
 		return true
-	case TASKUNCHANGED:
+	case ImportActionTASKUNCHANGED:
 		return true
-	case UNCHANGED:
+	case ImportActionUNCHANGED:
 		return true
 	default:
 		return false
@@ -934,10 +937,6 @@ type Operation struct {
 
 // QueryRequest defines model for QueryRequest.
 type QueryRequest struct {
-	// AsOf Not supported: any value is rejected with AS_OF_UNSUPPORTED.
-	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
-	AsOf *time.Time `json:"as_of,omitempty"`
-
 	// PageSize Default 1000; values above 1000 are coerced to 1000.
 	PageSize  *int    `json:"page_size,omitempty"`
 	PageToken *string `json:"page_token,omitempty"`

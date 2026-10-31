@@ -73,7 +73,7 @@ func (e *env) apply(t *testing.T, id int64, res map[int]string) *ImportJobResult
 
 func (e *env) diff(t *testing.T, id int64) map[int]DiffRow {
 	t.Helper()
-	rows, _, err := e.st.DiffImport(e.ctx, e.p, id, nil, 0, 10000)
+	rows, _, err := e.st.DiffImport(e.ctx, e.p, id, nil, "", 10000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestImportDiffClassifications(t *testing.T) {
 	for _, c := range d[2].Changes {
 		gotKinds = append(gotKinds, c.Key+":"+c.Kind)
 	}
-	if !strings.Contains(strings.Join(gotKinds, ","), "stage.development:conflict") {
+	if !strings.Contains(strings.Join(gotKinds, ","), "stage.development:CONFLICT") {
 		t.Errorf("row 2 changes %v", gotKinds)
 	}
 	for _, c := range d[3].Changes {
@@ -236,13 +236,18 @@ func TestImportDiffClassifications(t *testing.T) {
 	}
 
 	// filter + paging
-	pg, next, err := e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true, "conflict": true}, 0, 2)
-	if err != nil || len(pg) != 2 || next != 2 {
-		t.Fatalf("page: %v %d %v", pg, next, err)
+	pg, next, err := e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true, "conflict": true}, "", 2)
+	if err != nil || len(pg) != 2 || next == "" {
+		t.Fatalf("page: %v %q %v", pg, next, err)
 	}
-	pg, next, _ = e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true, "conflict": true}, 2, 10)
-	if len(pg) != 2 || next != 0 {
-		t.Fatalf("page2: %v %d", pg, next)
+	// the token is bound to its job and filter, and cannot be forged from an offset
+	_, _, err = e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true}, next, 2)
+	coreErr(t, err, core.StatusInvalidArgument, "INVALID_PAGE_TOKEN")
+	_, _, err = e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true, "conflict": true}, "2", 2)
+	coreErr(t, err, core.StatusInvalidArgument, "INVALID_PAGE_TOKEN")
+	pg, next, _ = e.st.DiffImport(e.ctx, e.p, id2, map[string]bool{"new": true, "conflict": true}, next, 10)
+	if len(pg) != 2 || next != "" {
+		t.Fatalf("page2: %v %q", pg, next)
 	}
 
 	// staging changed nothing

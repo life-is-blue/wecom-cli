@@ -398,6 +398,20 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
+// query has no --as-of (the server never supported it) and documents the real page-size maximum.
+func TestQueryFlags(t *testing.T) {
+	f := newFake(t)
+	e := newEnv(t, f)
+	if code, _, _ := e.run("", "query", "SELECT 1", "--as-of", "2026-01-01T00:00:00Z"); code != 2 {
+		t.Errorf("--as-of must be an unknown flag (exit 2), got %d", code)
+	}
+	_, out, errs := e.run("", "query", "--help")
+	h := out + errs
+	if !strings.Contains(h, "max 1000") || strings.Contains(h, "10000") || strings.Contains(h, "as-of") {
+		t.Errorf("query --help:\n%s", h)
+	}
+}
+
 func TestQueryPaginates(t *testing.T) {
 	f := newFake(t)
 	e := newEnv(t, f)

@@ -250,7 +250,7 @@ def main():
     call("getEvent", path_vars={**w, "event": rid(evs["events"][0]["name"])})
     # ---- query
     call("query", path_vars=P, body={"sql": "SELECT stage, health, workflows FROM stage_distribution", "page_size": 10})
-    call("query", path_vars=P, body={"sql": "SELECT stage FROM stage_distribution", "as_of": "2026-01-01T00:00:00Z"}, expect=400, tag="as_of (spec lists it)")
+    call("query", path_vars=P, body={"sql": "SELECT stage FROM stage_distribution", "as_of": "2026-01-01T00:00:00Z"}, expect=400, tag="as_of (not in the spec, still refused)")
     call("query", path_vars=P, body={"sql": "SELECT code FROM workflows", "page_size": 5000}, tag="page_size above 1000")
     call("query", path_vars=P, body={"sql": "SELECT * FROM api_token"}, expect=400, tag="non-view")
     # ---- import jobs

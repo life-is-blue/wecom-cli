@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -197,7 +198,10 @@ func (s *Server) routeEvents(q *request, wf int64) error {
 // ---------------------------------------------------------------- query
 
 func (s *Server) query(q *request) error {
-	var body api.QueryRequest
+	var body struct {
+		api.QueryRequest
+		AsOf *json.RawMessage `json:"as_of"` // not part of the contract; sent anyway it is refused, not ignored
+	}
 	if err := q.decodeBody(&body, false); err != nil {
 		return err
 	}

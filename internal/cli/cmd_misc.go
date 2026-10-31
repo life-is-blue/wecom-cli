@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/url"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -38,7 +37,7 @@ func (a *App) viewsCmd() *cobra.Command {
 
 func (a *App) queryCmd() *cobra.Command {
 	var pageSize int
-	var pageToken, asOf string
+	var pageToken string
 	cmd := &cobra.Command{
 		Use: `query "<SELECT ...>" [--page-size N] [--page-count N]`, Short: "Run a read-only SQL SELECT over the documented views (see `openetl views`)",
 		Args: exactArgs(1),
@@ -51,13 +50,6 @@ func (a *App) queryCmd() *cobra.Command {
 			if pageSize > 0 {
 				req.PageSize = &pageSize
 			}
-			if asOf != "" {
-				t, err := time.Parse(time.RFC3339, asOf)
-				if err != nil {
-					return usagef("--as-of must be RFC 3339, e.g. 2026-09-30T00:00:00Z")
-				}
-				req.AsOf = &t
-			}
 			return a.paginate(func(tok string) ([]byte, error) {
 				if tok != "" {
 					req.PageToken = &tok
@@ -66,9 +58,8 @@ func (a *App) queryCmd() *cobra.Command {
 			}, pageToken)
 		},
 	}
-	cmd.Flags().IntVar(&pageSize, "page-size", 0, "rows per page (max 10000)")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "rows per page (max 1000)")
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "continue from a next_page_token")
-	cmd.Flags().StringVar(&asOf, "as-of", "", "point-in-time view (RFC 3339)")
 	return cmd
 }
 

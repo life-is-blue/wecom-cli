@@ -100,7 +100,8 @@
    },
    {
     "name": "primary_workflow_id",
-    "type": "bigint"
+    "type": "bigint",
+    "note": "the task's primary workflow (lowest id if legacy data holds two)"
    }
   ]
  },
@@ -174,7 +175,7 @@
  },
  {
   "name": "comments",
-  "description": "One row per comment.",
+  "description": "One row per comment of a live workflow (comments of soft-deleted workflows are hidden).",
   "columns": [
    {
     "name": "id",
@@ -209,7 +210,7 @@
  },
  {
   "name": "workflow_stages",
-  "description": "Every stage of every workflow; no change means open.",
+  "description": "Every stage of every live workflow; no change means open.",
   "columns": [
    {
     "name": "workflow_id",
@@ -259,7 +260,7 @@
  },
  {
   "name": "open_items",
-  "description": "Unresolved issues, risks and questions per workflow.",
+  "description": "Unresolved issues, risks and questions per live workflow; only workflows with at least one.",
   "columns": [
    {
     "name": "workflow_id",

@@ -21,7 +21,7 @@ func (e *entityFlags) bind(cmd *cobra.Command, create bool) {
 	f := cmd.Flags()
 	f.StringVar(&e.name, "name", "", "display name")
 	if create {
-		f.StringVar(&e.id, "id", "", "optional id (lowercase slug); server-assigned when omitted")
+		f.StringVar(&e.id, "id", "", "reserved: client-assigned ids are rejected with CLIENT_ID_UNSUPPORTED; ids are server-assigned")
 	}
 	f.StringArrayVar(&e.labels, "label", nil, "label key=value (repeatable, filterable)")
 	f.StringArrayVar(&e.annotations, "annotation", nil, "annotation key=value (repeatable, free text)")

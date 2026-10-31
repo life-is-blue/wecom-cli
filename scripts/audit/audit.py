@@ -14,6 +14,7 @@ Environment (all optional):
 """
 import concurrent.futures
 import glob
+import http.client
 import json
 import os
 import re
@@ -21,7 +22,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-import urllib.request
+import urllib.parse
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 os.chdir(ROOT)
@@ -44,6 +45,22 @@ class Audit:
 
     def skip(self, area, name, why):
         self.add("SKIP", area, name, why)
+
+
+
+def http_call(method, url, token, body=None, timeout=20):
+    """One HTTP request -> (status, text). Only http(s) URLs are accepted (urllib would also open file: and ftp:)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("unsupported URL: %r" % url)
+    conn = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(u.hostname, u.port, timeout=timeout)
+    try:
+        conn.request(method, u.path + ("?" + u.query if u.query else ""), body=body,
+                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        r = conn.getresponse()
+        return r.status, r.read().decode()
+    finally:
+        conn.close()
 
 
 A = Audit()
@@ -255,13 +272,15 @@ def sql_enum(table, col):
 
 
 def go_reasons():
-    """{reason: set(status)} from NewError(<status>, "REASON", ...) and similar literal pairs"""
+    """{reason: set(status)} from NewError(<status>, "REASON", ...), row errors and the invalid("REASON", ...) helpers"""
     out = {}
     for f in GO_PROD:
         for m in re.finditer(r"\b(?:core\.)?(Status[A-Z]\w*)\s*,\s*\"([A-Z][A-Z0-9_]+)\"", GO_SRC[f]):
             out.setdefault(m.group(2), set()).add(m.group(1))
         for m in re.finditer(r"\b\w*[Ee]rr\w*\(\s*\w+\s*,\s*\"([A-Z][A-Z0-9_]+)\"", GO_SRC[f]):
             out.setdefault(m.group(1), set()).add("rowError")
+        for m in re.finditer(r"\b(?:invalid|invalidArg)\(\s*\"([A-Z][A-Z0-9_]+)\"", GO_SRC[f]):  # server/store helpers: INVALID_ARGUMENT + reason
+            out.setdefault(m.group(1), set()).add("StatusInvalidArgument")
     return out
 
 
@@ -785,13 +804,8 @@ def section_routes():
                 .replace("{importJob}", "999999").replace("{account}", "nobody-probe").replace("{token}", "999999") \
                 .replace("{member}", "nobody-probe")
             body = None if method in ("get", "delete") else b'{"__probe":true}'
-            req = urllib.request.Request(base_url + url, data=body, method=method.upper(),
-                                         headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
             try:
-                r = urllib.request.urlopen(req, timeout=20)
-                text = r.read().decode()
-            except urllib.error.HTTPError as e:
-                text = e.read().decode()
+                _, text = http_call(method.upper(), base_url + url, tok, body)
             except Exception as e:
                 A.check(area, "probe %s %s" % (method.upper(), path), False, str(e))
                 continue

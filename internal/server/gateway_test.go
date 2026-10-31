@@ -461,3 +461,44 @@ func TestConcurrentEtagWriters(t *testing.T) {
 		t.Fatalf("exactly one writer may win an etag: ok=%d conflict=%d", ok, conflict)
 	}
 }
+
+// A soft-deleted workflow or task is read-only except for its restore; a comment of a deleted workflow too.
+func TestDeletedEntitiesRejectWrites(t *testing.T) {
+	f := newFixture(t)
+	base := "/v1/projects/" + f.project
+	w := f.wantOK(f.do(f.editor, "POST", base+"/workflows", map[string]any{"display_name": "w"}))
+	wn := str(w.body, "name")
+	w2 := f.wantOK(f.do(f.editor, "POST", base+"/workflows", map[string]any{"display_name": "w2"}))
+	c := f.wantOK(f.do(f.editor, "POST", "/v1/"+wn+"/comments", map[string]any{"kind": "ISSUE", "body": "b"}))
+	tk := f.wantOK(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t", "workflows": []any{map[string]any{"workflow": wn, "primary": true}}}))
+	tn := str(tk.body, "name")
+
+	// a second primary is refused at creation; assigning PRIMARY moves the primary instead
+	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t2", "workflows": []any{
+		map[string]any{"workflow": wn, "primary": true}, map[string]any{"workflow": str(w2.body, "name"), "primary": true}}}), 400, "INVALID_ARGUMENT", "MULTIPLE_PRIMARY")
+	mv := f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": str(w2.body, "name"), "membership": "PRIMARY"}))
+	primaries := 0
+	for _, m := range mv.body["workflows"].([]any) {
+		if m.(map[string]any)["primary"] == true {
+			primaries++
+		}
+	}
+	if primaries != 1 {
+		t.Fatalf("moving the primary left %d primaries: %s", primaries, mv.raw)
+	}
+
+	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+wn, nil))
+	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+tn, nil))
+	pre := "FAILED_PRECONDITION"
+	f.wantErr(f.do(f.editor, "PATCH", "/v1/"+wn+"?update_mask=display_name", map[string]any{"workflow": map[string]any{"display_name": "x"}}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+wn+":advanceStage", map[string]any{"stage": "development"}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+wn+":setScope", map[string]any{"scope": "OUT_OF_SCOPE", "reason": "obsolete"}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "PATCH", "/v1/"+tn+"?update_mask=display_name", map[string]any{"task": map[string]any{"display_name": "x"}}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": str(w2.body, "name"), "membership": "SHARED"}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+str(c.body, "name")+":resolve", nil), 400, pre, "ENTITY_DELETED")
+	f.wantOK(f.do(f.editor, "GET", "/v1/"+wn, nil)) // reads stay
+	f.wantOK(f.do(f.editor, "POST", "/v1/"+wn+":undelete", nil))
+	f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":undelete", nil))
+	f.wantOK(f.do(f.editor, "POST", "/v1/"+str(c.body, "name")+":resolve", nil))
+	f.wantOK(f.do(f.editor, "PATCH", "/v1/"+wn+"?update_mask=display_name", map[string]any{"workflow": map[string]any{"display_name": "x"}}))
+}

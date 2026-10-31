@@ -18,6 +18,9 @@ Semantics implemented here (the spec, see docs/m0-naming-spec.md and db/migratio
     'pass' nor 'na', NULL when all are; labels = attr.*, assignees = assignee.* (removed keys vanish).
   * a comment counts as open when it is not resolved and not deleted; issues block, risks put at risk.
   * merged_into_id is only shown while scope is 'out'.
+  * workflow_stages, open_items and comments only carry rows of workflows that `workflows` lists (soft-deleted, unknown or
+    event-less workflows are hidden); open_items has a row only for a workflow with at least one open issue, risk or
+    question; tasks.primary_workflow_id is the lowest workflow id among the task's primary links.
 Exit status 0 only if everything matches.
 """
 import argparse
@@ -26,9 +29,10 @@ import json
 import shlex
 import subprocess
 import sys
-import urllib.request
+import http.client
+import urllib.parse
 
-PAGE = 10000
+PAGE = 1000
 
 
 # ----------------------------------------------------------------------------- raw dump
@@ -78,6 +82,22 @@ def parse_ts(s):
 
 
 # ----------------------------------------------------------------------------- server query path
+
+def http_call(method, url, token, body=None, timeout=20):
+    """One HTTP request -> (status, text). Only http(s) URLs are accepted (urllib would also open file: and ftp:)."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("unsupported URL: %r" % url)
+    conn = (http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection)(u.hostname, u.port, timeout=timeout)
+    try:
+        conn.request(method, u.path + ("?" + u.query if u.query else ""), body=body,
+                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        r = conn.getresponse()
+        return r.status, r.read().decode()
+    finally:
+        conn.close()
+
+
 class Query:
     def __init__(self, base, project, token):
         self.url = "%s/v1/projects/%s:query" % (base.rstrip("/"), project)
@@ -89,12 +109,10 @@ class Query:
             body = {"sql": sql, "page_size": PAGE}
             if tok:
                 body["page_token"] = tok
-            req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST",
-                                         headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
-            try:
-                resp = json.loads(urllib.request.urlopen(req, timeout=300).read())
-            except urllib.error.HTTPError as e:
-                raise SystemExit("query failed: %s\n%s" % (sql, e.read().decode()[:500]))
+            status, text = http_call("POST", self.url, self.token, json.dumps(body).encode(), timeout=300)
+            if status >= 400:
+                raise SystemExit("query failed: %s\n%s" % (sql, text[:500]))
+            resp = json.loads(text)
             cols = [c["name"] for c in resp["columns"]]
             rows += resp["rows"]
             tok = resp.get("next_page_token") or ""
@@ -317,12 +335,10 @@ def reconcile(raw, q, rep):
         prim = e["primaries"]
         apw = a["primary_workflow_id"]
         if len(prim) > 1:
-            rep.notes.append("task %d has %d primary links %s (API: at most one); view shows %s" % (tid, len(prim), prim, apw))
-            if apw not in prim:
-                rep.bad("tasks", tid, "primary_workflow_id", prim, apw)
-        elif (prim[0] if prim else None) != apw:
+            rep.notes.append("task %d has %d primary links %s (only legacy/import data); view shows %s" % (tid, len(prim), prim, apw))
+        if (prim[0] if prim else None) != apw:  # prim is sorted: the lowest workflow id wins
             rep.bad("tasks", tid, "primary_workflow_id", prim[0] if prim else None, apw,
-                    "the view takes any in.<id> key whose latest value is 'primary'")
+                    "the view takes the lowest id among the in.<id> keys whose latest value is 'primary'")
 
     # ---- workflow_stages (every workflow entity, all stages)
     cols, rows = q.run("SELECT workflow_id, stage_key, seq, status FROM workflow_stages ORDER BY workflow_id, seq")
@@ -331,35 +347,22 @@ def reconcile(raw, q, rep):
     for wid in raw.of_type("workflow"):
         for k, seq_ in raw.stages:
             est[(wid, k)] = dict(seq=seq_, status=raw.stage_state(wid, k))
-    # rows for workflows that `workflows` hides (soft-deleted / no delta) are a spec question: tallied separately
+    # a workflow that `workflows` hides (soft-deleted, no delta) has no rows here either
     hidden = {wid for wid in raw.of_type("workflow") if wid not in ew}
     strict_e = {k: v for k, v in est.items() if k[0] in ew}
-    strict_a = {k: v for k, v in ast.items() if k[0] in ew}
-    compare_rows(rep, "workflow_stages", strict_e, strict_a, ["seq", "status"])
-    hid_rows = sum(1 for k in ast if k[0] in hidden)
-    rep.compared["workflow_stages (hidden workflows)"] = hid_rows
-    for k in ast:
-        if k[0] in hidden and k in est and canon(est[k]["status"]) != canon(ast[k]["status"]):
-            rep.bad("workflow_stages", k, "status (hidden workflow)", est[k]["status"], ast[k]["status"])
-    if hid_rows:
-        rep.notes.append("SPEC-AMBIGUITY: workflow_stages exposes %d rows of %d soft-deleted workflows that `workflows` hides" % (hid_rows, len(hidden)))
+    compare_rows(rep, "workflow_stages", strict_e, ast, ["seq", "status"])
+    rep.compared["workflow_stages (hidden workflows: must have no rows)"] = sum(1 for k in ast if k[0] in hidden)
 
     # ---- open_items
     oc = raw.open_counts()
+    # a workflow has an open_items row only while it has an open issue, risk or question (notes alone give none)
+    ooc = {w: c for w, c in oc.items() if w in ew and c["issue"] + c["risk"] + c["question"] > 0}
     cols, rows = q.run("SELECT workflow_id, open_issues, open_risks, open_questions FROM open_items ORDER BY workflow_id")
     aoi = as_dict(cols, rows, "workflow_id")
-    eoi = {w: dict(open_issues=c["issue"], open_risks=c["risk"], open_questions=c["question"]) for w, c in oc.items() if w in ew}
-    visible_a = {w: {k: int(v) for k, v in d.items() if k != "workflow_id"} for w, d in aoi.items() if w in ew}
-    compare_rows(rep, "open_items", eoi, visible_a, ["open_issues", "open_risks", "open_questions"])
-    hid_oi = [w for w in aoi if w not in ew]
-    rep.compared["open_items (hidden workflows)"] = len(hid_oi)
-    for w in hid_oi:
-        e = oc.get(w)
-        a = aoi[w]
-        if e is None or (e["issue"], e["risk"], e["question"]) != (int(a["open_issues"]), int(a["open_risks"]), int(a["open_questions"])):
-            rep.bad("open_items", w, "counts (hidden workflow)", e, a)
-    if hid_oi:
-        rep.notes.append("SPEC-AMBIGUITY: open_items exposes %d rows of workflows that `workflows` hides (soft-deleted or unknown id)" % len(hid_oi))
+    eoi = {w: dict(open_issues=c["issue"], open_risks=c["risk"], open_questions=c["question"]) for w, c in ooc.items()}
+    aoi_n = {w: {k: int(v) for k, v in d.items() if k != "workflow_id"} for w, d in aoi.items()}
+    compare_rows(rep, "open_items", eoi, aoi_n, ["open_issues", "open_risks", "open_questions"])
+    rep.compared["open_items (hidden workflows: must have no rows)"] = sum(1 for w in aoi if w not in ew)
 
     # ---- stage_distribution
     cols, rows = q.run("SELECT stage, health, workflows FROM stage_distribution")
@@ -382,7 +385,7 @@ def reconcile(raw, q, rep):
             o = (d["assignees"] or {}).get(role)
             if o is None:
                 continue
-            c = oc.get(w)
+            c = ooc.get(w)
             if c is None:
                 continue
             t = ex.setdefault(o, [0, 0, 0])
@@ -400,7 +403,8 @@ def reconcile(raw, q, rep):
     ac = as_dict(cols, rows, "id")
     ec = {}
     for cid in raw.of_type("comment"):
-        if cid in raw.has_delta:
+        # a comment of a workflow that `workflows` hides, or pointing at no workflow, is not listed
+        if cid in raw.has_delta and isinstance(raw.val(cid, "on"), int) and raw.val(cid, "on") in ew:
             ec[cid] = dict(workflow_id=raw.val(cid, "on"), kind=raw.val(cid, "kind"),
                            resolved=1 if raw.val(cid, "resolved") is True else 0, deleted=1 if raw.deleted(cid) else 0)
     for d in ac.values():

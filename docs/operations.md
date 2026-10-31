@@ -8,7 +8,9 @@ Runbook for running openetl-server on MySQL 8.0. Every command in the backup sec
 | --- | --- | --- |
 | The MySQL database | all state: events, deltas, tokens, config, import jobs, attachment *metadata* | logical dump + binary logs (below) |
 | The blob directory (`OPENETL_STORAGE_DIR`, default `./data/blobs`; `/data/blobs` in the image) | attachment bytes; metadata without its blob is a dead link | file copy (`tar`/`rsync`), taken **after** the DB dump |
-| `OPENETL_STORAGE_SECRET`, DSNs, other env | not recoverable from the database | your secret store |
+| `OPENETL_STORAGE_SECRET`, `OPENETL_PAGE_TOKEN_KEY`, DSNs, other env | not recoverable from the database | your secret store |
+
+`OPENETL_PAGE_TOKEN_KEY` signs every `next_page_token` (lists, members, tokens, import diff, query). When it is unset each process draws a random key, so a token issued by one instance, or before a restart, is refused by another (`INVALID_PAGE_TOKEN`): **set the same value on every instance** behind a load balancer, and keep it across restarts if clients page across them. Changing it only invalidates tokens in flight.
 
 With `OPENETL_STORAGE=s3`, the bucket is the blob store: enable versioning there instead of copying a directory.
 

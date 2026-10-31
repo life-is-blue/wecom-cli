@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,15 +38,10 @@ func pageSizeOf(n int) (int, error) {
 	return n, nil
 }
 
-func encodeTok(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
-
-func decodeTok(t string) (string, error) {
-	b, err := base64.RawURLEncoding.DecodeString(t)
-	if err != nil {
-		return "", invalidArg("INVALID_PAGE_TOKEN", "invalid page_token")
-	}
-	return string(b), nil
-}
+// Admin lists use the same signed, query-bound tokens as every other list (INV-24). The position of
+// a members page is the last account name (hex in the token's kind field), of a tokens page the last id.
+func membersBinding(p Project) string     { return fmt.Sprintf("members\x00%d", p.ID) }
+func tokensBinding(account string) string { return "tokens\x00" + account }
 
 // ---------------------------------------------------------------- members
 
@@ -68,9 +63,15 @@ func (s *Store) ListMembers(ctx context.Context, p Project, pageSize int, token 
 	}
 	after := ""
 	if token != "" {
-		if after, err = decodeTok(token); err != nil {
+		kind, _, err := openPageToken(token, membersBinding(p))
+		if err != nil {
 			return nil, "", err
 		}
+		b, herr := hex.DecodeString(kind)
+		if herr != nil {
+			return nil, "", badPageToken("invalid page_token")
+		}
+		after = string(b)
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT user_name, role, side, created_at FROM member
 		WHERE project_id = ? AND user_name > ? ORDER BY user_name LIMIT ?`, p.ID, after, size+1)
@@ -87,7 +88,7 @@ func (s *Store) ListMembers(ctx context.Context, p Project, pageSize int, token 
 			return nil, "", internalErr(err)
 		}
 		if len(out) == size {
-			next = encodeTok(last)
+			next = sealPageToken(hex.EncodeToString([]byte(last)), 0, membersBinding(p))
 			break
 		}
 		out = append(out, renderMember(p, u, r, sd, ct))
@@ -254,12 +255,9 @@ func (s *Store) ListTokens(ctx context.Context, account string, pageSize int, to
 	}
 	var after int64
 	if token != "" {
-		v, err := decodeTok(token)
+		_, after, err = openPageToken(token, tokensBinding(account))
 		if err != nil {
 			return nil, "", err
-		}
-		if after, err = strconv.ParseInt(v, 10, 64); err != nil {
-			return nil, "", invalidArg("INVALID_PAGE_TOKEN", "invalid page_token")
 		}
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT id, expires_at, revoked_at, created_at FROM api_token
@@ -279,7 +277,7 @@ func (s *Store) ListTokens(ctx context.Context, account string, pageSize int, to
 			return nil, "", internalErr(err)
 		}
 		if len(out) == size {
-			next = encodeTok(strconv.FormatInt(last, 10))
+			next = sealPageToken("t", last, tokensBinding(account))
 			break
 		}
 		out = append(out, renderToken(account, id, ex, rv, cr))

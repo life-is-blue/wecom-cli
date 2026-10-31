@@ -187,7 +187,7 @@ func (a *App) emitLines(lines [][]byte) error {
 		_, err := a.Stdout.Write(buf.Bytes())
 		return err
 	}
-	if err := os.WriteFile(a.output, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(a.output, buf.Bytes(), 0o600); err != nil {
 		return runtimef("write %s: %v", a.output, err)
 	}
 	res, _ := json.Marshal(map[string]any{"output": a.output, "bytes": buf.Len()})

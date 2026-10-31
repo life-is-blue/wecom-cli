@@ -40,6 +40,9 @@ func Validate(in Input) error {
 	if in.Actor.Channel == ChannelLegacy || in.Actor.Channel == ChannelImport {
 		return nil
 	}
+	if err := checkLive(in); err != nil {
+		return err
+	}
 	var reason *Reason
 	if in.ReasonKey != "" {
 		r, ok := in.Cfg.Reasons[in.ReasonKey]
@@ -73,6 +76,9 @@ func Validate(in Input) error {
 		}
 	}
 
+	if err := checkPrimary(in, after); err != nil {
+		return err
+	}
 	for _, c := range in.Changes {
 		if err := builtin(in, c, after, reason); err != nil {
 			return err
@@ -80,6 +86,63 @@ func Validate(in Input) error {
 		if err := checkRules(in, c, reason); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkLive refuses every change to a soft-deleted entity except the one that restores it, and every
+// change to a comment whose workflow is soft-deleted (INV-26).
+func checkLive(in Input) error {
+	if in.EntityID == 0 {
+		return nil
+	}
+	if Bool(in.Current["deleted"]) {
+		for _, c := range in.Changes {
+			if c.Key == "deleted" && !Bool(c.New) {
+				return nil // undelete
+			}
+		}
+		return NewError(StatusFailedPrecondition, "ENTITY_DELETED", "the %s is deleted; only undelete is allowed", in.EntityTyp).With("entity", in.EntityTyp)
+	}
+	if in.EntityTyp == "comment" && in.Env != nil {
+		var wf int64
+		if json.Unmarshal(in.Current["on"], &wf) == nil && wf != 0 {
+			ok, err := in.Env.WorkflowExists(wf)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return NewError(StatusFailedPrecondition, "ENTITY_DELETED", "the workflow of this comment is deleted").With("entity", "workflow")
+			}
+		}
+	}
+	return nil
+}
+
+// checkPrimary keeps at most one primary workflow link (in.<id> = primary) per task. A change set that
+// makes a link primary while another one stays primary is refused; moving the primary (new one primary,
+// old one demoted in the same change set) is fine.
+func checkPrimary(in Input, after map[string]json.RawMessage) error {
+	if in.EntityTyp != "task" {
+		return nil
+	}
+	adds := false
+	for _, c := range in.Changes {
+		if strings.HasPrefix(c.Key, "in.") && Scalar(c.New) == "primary" && Scalar(c.Old) != "primary" {
+			adds = true
+		}
+	}
+	if !adds {
+		return nil
+	}
+	n := 0
+	for k, v := range after {
+		if strings.HasPrefix(k, "in.") && Scalar(v) == "primary" {
+			n++
+		}
+	}
+	if n > 1 {
+		return NewError(StatusInvalidArgument, "DUPLICATE_PRIMARY", "a task has at most one primary workflow; demote the current one in the same change")
 	}
 	return nil
 }

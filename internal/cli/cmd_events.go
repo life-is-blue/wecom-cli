@@ -165,7 +165,7 @@ func (a *App) fetchTo(target, dst string) (int64, string, error) {
 			Message: "download failed: " + strings.TrimSpace(string(data))}
 	}
 	tmp := dst + ".part"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, "", runtimef("write %s: %v", dst, err)
 	}

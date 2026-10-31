@@ -570,6 +570,18 @@ func (m *Model) live(id int) bool {
 // validateWF judges the changes of one event in order. Within one change the structural checks come
 // before the rule-table checks; the first failing change wins.
 func (m *Model) validateWF(op Op, w *WF, changes []chg) *Err {
+	// spec: a soft-deleted workflow accepts nothing but the change that restores it
+	if w.IsDeleted() {
+		restores := false
+		for _, c := range changes {
+			if c.key == "deleted" && c.new != "true" {
+				restores = true
+			}
+		}
+		if !restores {
+			return e("FAILED_PRECONDITION", "ENTITY_DELETED")
+		}
+	}
 	if err := checkReason(op.Reason, op.Note); err != nil {
 		return err
 	}
@@ -730,7 +742,12 @@ func (m *Model) doCommentMut(op Op) Result {
 			}
 			return []chg{{"deleted", c.Deleted, "true"}}, nil
 		},
-		func(ch []chg) *Err { return checkReason(op.Reason, op.Note) },
+		func(ch []chg) *Err {
+			if !m.live(c.WF) { // spec: a comment of a deleted workflow is read-only
+				return e("FAILED_PRECONDITION", "ENTITY_DELETED")
+			}
+			return checkReason(op.Reason, op.Note)
+		},
 		func(ch []chg) {
 			if key == "resolved" {
 				c.Resolved = val

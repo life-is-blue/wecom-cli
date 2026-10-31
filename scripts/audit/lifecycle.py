@@ -46,7 +46,7 @@ def oe(who, *args, fail=False, raw=False):
 
 def q(sql):
     cols, rows = None, []
-    d = oe("alice", "query", sql, "--page-size", "10000")
+    d = oe("alice", "query", sql, "--page-size", "1000")
     return d["rows"]
 
 

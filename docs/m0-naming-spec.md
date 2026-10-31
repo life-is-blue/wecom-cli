@@ -41,7 +41,7 @@ development, deployment, verify, accept, dual_run, cutover (NOT developer_valida
 ## Methods (REST, /v1)
 - List: GET /v1/{parent}/workflows?filter=&order_by=&page_size=&page_token=  -> {workflows[], next_page_token}
 - Get: GET /v1/{name}
-- Create: POST /v1/{parent}/workflows?workflow_id=
+- Create: POST /v1/{parent}/workflows (`?workflow_id=` is reserved: rejected with CLIENT_ID_UNSUPPORTED, ids are server-assigned)
 - Update: PATCH /v1/{workflow.name}?update_mask=   body carries etag, reason, note, request_id, validate_only
 - Delete (soft): DELETE /v1/{name}?etag=   ; POST /v1/{name}:undelete
 - Custom: POST /v1/{name}:advanceStage {stage, reason?, note?, evidence_attachments?, etag?, request_id?, validate_only?}
@@ -52,7 +52,7 @@ development, deployment, verify, accept, dual_run, cutover (NOT developer_valida
 - Comments: create/list/get under workflow; attachments: POST /v1/{parent}/attachments:initUpload -> presigned URL,
   then POST /v1/{parent}/attachments (metadata: filename,size,sha256,storage_key); GET /v1/{name}:download -> URL. Cap 100 MiB (104857600 bytes).
 - Events: list/get only (GET /v1/{parent}/events?filter=&as_of=)
-- Query: POST /v1/projects/{project}:query {sql, page_size, page_token, as_of} -> {columns, rows, next_page_token}
+- Query: POST /v1/projects/{project}:query {sql, page_size, page_token} -> {columns, rows, next_page_token}
   read-only SELECT over documented views only.
 - ImportJobs: POST create (stage rows), GET, :diff (GET), :apply, :rollback; apply/rollback return Operation.
 - Members/tokens/config admin: /v1/projects/{p}/members, /v1/accounts/{a}/tokens, /v1/projects/{p}/config

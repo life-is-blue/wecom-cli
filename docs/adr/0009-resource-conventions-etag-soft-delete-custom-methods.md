@@ -16,7 +16,7 @@ What the sources say, and how openetl stands:
 | User IDs lowercase RFC-1034 style `^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$` (G2) | `wf-000123`, project slugs | conforms (project slug rule: check the regex is enforced, unverified) |
 | `uid` OUTPUT_ONLY (G2) | yes | conforms |
 | Get: GET, no body (G3) | yes | conforms |
-| Create: `{resource}_id` on the request; `ALREADY_EXISTS` (G3) | `?workflow_id=` | conforms |
+| Create: `{resource}_id` on the request; `ALREADY_EXISTS` (G3) | `?workflow_id=` / `?task_id=` are reserved: any value is rejected with INVALID_ARGUMENT `CLIENT_ID_UNSUPPORTED`, ids are server-assigned | deviates (display codes `WF-000123` must stay unique and sequential) |
 | Update: PATCH, `update_mask`; omitted mask = all populated fields; `*` full replace; "state fields must not be directly writable in update methods" (G5) | `PATCH ... ?update_mask=`; stages change via `:advanceStage` etc. | conforms in shape. Behaviour for an omitted mask and for stage fields inside `PATCH` is unverified in code |
 | Delete soft: marks, not removes; `Undelete`; list hides by default, `show_deleted`; `delete_time` + `purge_time` (G12) | `delete_time`, `:undelete`, `show_deleted` | conforms; `purge_time` absent by design (0005) |
 | Delete carries `etag`; `allow_missing` optional (G3) | `DELETE ?etag=` | conforms |

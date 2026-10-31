@@ -25,7 +25,7 @@ oe_as() {
   [ $ms -le "${LIMIT_MS:-5000}" ] || fail "openetl $* took ${ms}ms (> ${LIMIT_MS:-5000})"
 }
 jget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval(sys.argv[1]))" "$1"; }
-q() { oe_as "$ADMIN" query "$1" --page-size 10000; }          # raw JSON
+q() { oe_as "$ADMIN" query "$1" --page-size 1000; }          # raw JSON
 q1() { q "$1" | jget "d['rows'][0][0]"; }                       # one number
 check() { [ "$2" = "$3" ] && echo "   ok  $1 = $2" || fail "$1: got $2, expected $3"; }
 

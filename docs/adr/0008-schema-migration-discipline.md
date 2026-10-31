@@ -47,8 +47,8 @@ addressing DDL non-atomicity (the real risk, shared with Airflow). Rules:
 2. (The check script's run-twice test covers whole-file re-runs; this rule is about a file that failed midway.) Every statement in a new file must be re-runnable (`IF NOT EXISTS`, `CREATE OR REPLACE`, guarded backfills) or the file must
    contain exactly one statement (MySQL 8.0 DDL is atomic per statement).
 3. Seed rows get a natural key or `INSERT IGNORE` (`reason`, `stage_def` already do; `rule` does not).
-4. A dry-run that prints pending files without executing (`openetl-server migrate --show-sql`), the analogue of Airflow's
-   `--show-sql-only`, if the in-flight check script does not already cover the need. Small, operator-only.
+4. A dry run is `scripts/check-migrations.sh` (lints every unfrozen file; `--apply` replays them on a throwaway MySQL), the
+   analogue of Airflow's `--show-sql-only`. `openetl-server migrate` itself only applies; it has no print-only flag.
 5. Keep the advisory lock; it is the equivalent of Airflow relying on a single migrating process.
 6. Public views are recreated with `CREATE OR REPLACE VIEW`, and a column-list change needs a new file that recreates every
    dependent view (0002 explains why). The view contract test must run after migration in CI.

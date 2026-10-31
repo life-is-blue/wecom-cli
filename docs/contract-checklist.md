@@ -35,6 +35,19 @@ Re-run everything with `scripts/check-contract.sh` (`--static` for the spec-only
 | 10 | soft delete / undelete are idempotent (200 on an already deleted / live resource) | documented in the operations (the AIP says otherwise, see AIP-164 below) |
 | 11 | `405` for a wrong HTTP method on a known route is `400 INVALID_ARGUMENT / METHOD_NOT_ALLOWED` | documented in `info.description` (pinned by `gateway_test.go`) |
 
+### 2.1b Deliberate contract corrections (baseline refreshed for exactly these)
+
+`api/openapi.baseline.yaml` was copied from `api/openapi.yaml` after `oasdiff breaking` listed these and nothing else. All of them make the
+spec say what the server already did, or retire a field that never worked:
+
+| # | Change | Why it is safe |
+| --- | --- | --- |
+| C1 | `QueryRequest.page_size.maximum` 10000 -> 1000 (also `openetl query --help`) | the server always clamped to 1000 |
+| C2 | `QueryRequest.as_of` removed, and the `--as-of` flag of the query command removed | every request that set it was refused with `AS_OF_UNSUPPORTED`; a body that still carries it is still refused with that reason. `listEvents` keeps `as_of` |
+| C3 | diff `changes[].kind` values `source`/`fill`/`conflict` -> `SOURCE`/`FILL`/`CONFLICT` (+ `KIND_UNSPECIFIED`), server and CLI output changed with it | UPPER_SNAKE rule of `docs/m0-naming-spec.md`; consumers of `openetl import diff` must compare upper case (documented in `docs/import-format.md`, `docs/cli-import.md`) |
+| C4 | error description lists `ENTITY_DELETED` (FAILED_PRECONDITION) and `DUPLICATE_PRIMARY` (INVALID_ARGUMENT) | new refusals of INV-26 and INV-27 (writes to a soft-deleted entity, a second primary workflow link); documentation only |
+| C5 | `createWorkflow ?workflow_id=` / `createTask ?task_id=` unchanged in the spec ("reserved, any value is rejected with CLIENT_ID_UNSUPPORTED", which is what the server does); ADR 0009 now says "deviates", `openetl workflow create --id` help says reserved | no spec change needed, docs aligned |
+
 ### 2.2 Linter findings that are ignored on purpose (`api/vacuum-ruleset.yaml`)
 
 | Rule (count) | Why it stays |

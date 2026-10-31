@@ -19,9 +19,9 @@ const (
 
 // Kinds of a KeyChange.
 const (
-	ChangeSource   = "source"   // source-owned key (display name, source.*): imports may overwrite it
-	ChangeFill     = "fill"     // platform-owned key that was never set: imports may fill it in
-	ChangeConflict = "conflict" // platform-owned key edited in the platform and different in the source
+	ChangeSource   = "SOURCE"   // source-owned key (display name, source.*): imports may overwrite it
+	ChangeFill     = "FILL"     // platform-owned key that was never set: imports may fill it in
+	ChangeConflict = "CONFLICT" // platform-owned key edited in the platform and different in the source
 )
 
 // ImportRow is a validated, normalized staged row. Keys holds the desired storage keys

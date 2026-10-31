@@ -144,7 +144,7 @@ type diffChange struct {
 	Key      string          `json:"key"`
 	OldValue json.RawMessage `json:"old_value,omitempty"`
 	NewValue json.RawMessage `json:"new_value,omitempty"`
-	Kind     string          `json:"kind,omitempty"` // source | fill | conflict (extension)
+	Kind     string          `json:"kind,omitempty"` // SOURCE | FILL | CONFLICT (extension)
 }
 
 type diffLine struct {
@@ -163,7 +163,7 @@ func (s *Server) diffImportJob(q *request, id int64) error {
 	if err != nil {
 		return err
 	}
-	size, offset := 100, 0
+	size := 100
 	if v := q.query("page_size"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
@@ -173,15 +173,8 @@ func (s *Server) diffImportJob(q *request, id int64) error {
 			size = min(n, 1000)
 		}
 	}
-	if v := q.query("page_token"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return invalid("INVALID_PAGE_TOKEN", "invalid page_token")
-		}
-		offset = n
-	}
 	p := q.pr.project()
-	rows, next, err := s.Store.DiffImport(q.r.Context(), p, id, actions, offset, size)
+	rows, next, err := s.Store.DiffImport(q.r.Context(), p, id, actions, q.query("page_token"), size)
 	if err != nil {
 		return err
 	}
@@ -215,9 +208,7 @@ func (s *Server) diffImportJob(q *request, id int64) error {
 		}
 		out.Rows = append(out.Rows, l)
 	}
-	if next > 0 {
-		out.NextPageToken = strconv.Itoa(next)
-	}
+	out.NextPageToken = next
 	return s.respond(q, out)
 }
 

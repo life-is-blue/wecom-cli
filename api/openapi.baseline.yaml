@@ -460,8 +460,8 @@ paths:
       description: |
         A single SELECT over the views `workflows`, `tasks`, `events`, `comments`, `workflow_stages`,
         `stage_distribution`, `open_items`. Anything else is INVALID_ARGUMENT. Rows and run time are capped.
-        `page_size` above 1000 is coerced to 1000 (default 1000). `as_of` is accepted by the schema but
-        currently rejected with INVALID_ARGUMENT / AS_OF_UNSUPPORTED; use `listEvents` for point-in-time history.
+        `page_size` above 1000 is coerced to 1000 (default 1000). There is no point-in-time query: a body that carries
+        `as_of` is rejected with INVALID_ARGUMENT / AS_OF_UNSUPPORTED; use `listEvents` for point-in-time history.
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/QueryRequest'}}}
@@ -653,9 +653,9 @@ components:
   responses:
     Error:
       description: |
-        Error. Statuses: INVALID_ARGUMENT 400, UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
+        Error. Statuses: INVALID_ARGUMENT 400 (e.g. DUPLICATE_PRIMARY), UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
         NOT_FOUND 404, ALREADY_EXISTS 409, ABORTED 409 (ETAG_MISMATCH),
-        FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE),
+        FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE, ENTITY_DELETED),
         RESOURCE_EXHAUSTED 429 (with Retry-After), UNIMPLEMENTED 501, INTERNAL 500.
         Every error carries exactly one ErrorInfo (reason matches [A-Z][A-Z0-9_]+[A-Z0-9], domain `openetl`).
       content:
@@ -942,9 +942,8 @@ components:
       required: [sql]
       properties:
         sql: {type: string, example: 'SELECT stage, health, workflows FROM stage_distribution'}
-        page_size: {type: integer, minimum: 0, maximum: 10000, description: 'Default 1000; values above 1000 are coerced to 1000.'}
+        page_size: {type: integer, minimum: 0, maximum: 1000, description: 'Default 1000; values above 1000 are coerced to 1000.'}
         page_token: {type: string}
-        as_of: {type: string, format: date-time, deprecated: true, description: 'Not supported: any value is rejected with AS_OF_UNSUPPORTED.'}
     QueryResponse:
       type: object
       properties:
@@ -1004,7 +1003,7 @@ components:
               source: {$ref: '#/components/schemas/Source'}
               action: {$ref: '#/components/schemas/ImportAction'}
               match: {type: string, description: Matched workflow resource name.}
-              changes: {type: array, items: {type: object, properties: {key: {type: string}, old_value: {$ref: '#/components/schemas/AnyValue'}, new_value: {$ref: '#/components/schemas/AnyValue'}, kind: {type: string, enum: [source, fill, conflict], description: Extension.}}}}
+              changes: {type: array, items: {type: object, properties: {key: {type: string}, old_value: {$ref: '#/components/schemas/AnyValue'}, new_value: {$ref: '#/components/schemas/AnyValue'}, kind: {type: string, enum: [KIND_UNSPECIFIED, SOURCE, FILL, CONFLICT], description: Extension.}}}}
         next_page_token: {type: string}
     Operation:
       type: object
