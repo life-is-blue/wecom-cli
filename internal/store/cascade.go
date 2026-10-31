@@ -54,12 +54,24 @@ func (s *Store) cascadeTasks(ctx context.Context, tx *sql.Tx, req ChangeRequest,
 	if !del {
 		note = fmt.Sprintf("cascade: task %s with workflow %s (undelete of its delete event)", verb, FormatID(PrefixWorkflow, wf))
 	}
+	wfVal := strconv.FormatInt(wf, 10)
 	for _, id := range ids {
 		_, err := s.applyTx(ctx, tx, ChangeRequest{
 			ProjectID: req.ProjectID, EntityType: "task", EntityID: id, Actor: req.Actor, Note: note, EventTime: req.EventTime,
-			Plan: func(*Entity, core.Env) ([]PlannedChange, error) {
+			// the ids were read without a lock: re-check under the task's row lock, a task that moved to
+			// another workflow (or changed state) in the meantime is not this workflow's to touch
+			Plan: func(cur *Entity, _ core.Env) ([]PlannedChange, error) {
+				if core.Scalar(cur.Vals["workflow"]) != wfVal {
+					return nil, nil
+				}
 				if del {
+					if core.Bool(cur.Vals["deleted"]) {
+						return nil, nil
+					}
 					return []PlannedChange{{Key: "deleted", New: core.JSON(true)}, {Key: cascadeKey, New: core.JSON(wfEvent)}}, nil
+				}
+				if _, ok := cur.Vals[cascadeKey]; !ok {
+					return nil, nil
 				}
 				return []PlannedChange{{Key: "deleted", New: core.JSON(false)}, {Key: cascadeKey}}, nil
 			},
@@ -69,4 +81,26 @@ func (s *Store) cascadeTasks(ctx context.Context, tx *sql.Tx, req ChangeRequest,
 		}
 	}
 	return nil
+}
+
+// dropStaleCascade removes the cascade marker from a task the change leaves live: the marker only means
+// "restore me with my workflow" on a deleted task, so restoring the task on its own, or any other write to
+// a live one, must not leave it behind to be misread by a later undelete of some workflow.
+func dropStaleCascade(cur *Entity, planned []PlannedChange) []PlannedChange {
+	if _, ok := cur.Vals[cascadeKey]; !ok {
+		return planned
+	}
+	deleted := core.Bool(cur.Vals["deleted"])
+	for _, p := range planned {
+		switch p.Key {
+		case "deleted":
+			deleted = core.Bool(p.New)
+		case cascadeKey:
+			return planned // the plan decides
+		}
+	}
+	if deleted {
+		return planned
+	}
+	return append(planned[:len(planned):len(planned)], PlannedChange{Key: cascadeKey})
 }

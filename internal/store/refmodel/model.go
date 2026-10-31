@@ -262,22 +262,6 @@ func (m *Model) Do(op Op) Result {
 				}
 				pairs = append(pairs, [2]string{s, "open"})
 			}
-			// no cascade: every PASSED stage after a regressed one must be named too
-			var later []string
-			for i, s := range Stages {
-				if w.Stage[s] != "pass" || contains(op.Stages, s) {
-					continue
-				}
-				for _, r := range op.Stages[:] {
-					if stageSeq(r) < i+1 {
-						later = append(later, s)
-						break
-					}
-				}
-			}
-			if len(later) > 0 {
-				return nil, e("FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
-			}
 			return m.stageChgs(w, pairs), nil
 		})
 	case "setstages":
@@ -680,6 +664,17 @@ func (m *Model) validateWF(op Op, w *WF, changes []chg) ([]chg, *Err) {
 	after := w.clone()
 	for _, c := range changes {
 		setKey(after, c.key, c.new)
+	}
+	// INV-31, on every path: no change set may set a stage OPEN and leave a LATER stage PASSED
+	for _, c := range changes {
+		if !strings.HasPrefix(c.key, "stage.") || c.new != "open" || stageSeq(strings.TrimPrefix(c.key, "stage.")) == 0 {
+			continue
+		}
+		for _, later := range Stages[stageSeq(strings.TrimPrefix(c.key, "stage.")):] {
+			if after.Eff(later) == "pass" {
+				return nil, e("FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
+			}
+		}
 	}
 	rk := kindOf(op.Reason)
 	var extra []chg

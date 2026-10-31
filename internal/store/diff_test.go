@@ -441,6 +441,14 @@ func (h *harness) gen() refmodel.Op {
 					op.Stages[i] = s
 				}
 			}
+			// reopen PASSED stages through PATCH stages (INV-31 must hold here as it does for :regressStage)
+			if h.rnd.Intn(2) == 0 {
+				for i, s := range op.Stages {
+					if w.Stage[s] == "pass" {
+						op.States[i] = "OPEN"
+					}
+				}
+			}
 		}
 		switch h.rnd.Intn(3) {
 		case 0:

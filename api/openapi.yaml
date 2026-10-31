@@ -182,7 +182,7 @@ paths:
       tags: [Workflows]
       operationId: regressStage
       summary: Set PASSED stages back to OPEN in one event
-      description: A reject-kind `reason` is required (REASON_REQUIRED). A stage that is not PASSED yields NOT_REGRESSIBLE. A regress that would leave a later stage PASSED is refused with REGRESS_LATER_STAGES_PASSED (the error names the stages to add; there is no automatic cascade). Several stages may be regressed in one call.
+      description: A reject-kind `reason` is required (REASON_REQUIRED). A stage that is not PASSED yields NOT_REGRESSIBLE. A regress that would leave a later stage PASSED is refused with REGRESS_LATER_STAGES_PASSED (the error names the stages to add; there is no automatic cascade); the same refusal applies to any other write that sets a stage OPEN, such as `PATCH` with the `stages` mask. Several stages may be regressed in one call.
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/RegressStageRequest'}}}

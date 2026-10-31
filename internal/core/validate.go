@@ -85,6 +85,10 @@ func Validate(in Input) ([]Change, error) {
 		}
 	}
 
+	if err := checkLaterStages(in, after); err != nil {
+		return nil, err
+	}
+
 	var overrides []Change
 	for _, c := range in.Changes {
 		if err := builtin(in, c, after, reason); err != nil {
@@ -101,6 +105,44 @@ func Validate(in Input) ([]Change, error) {
 		}
 	}
 	return overrides, nil
+}
+
+// checkLaterStages refuses a change set that sets a stage to OPEN and leaves a LATER stage PASSED in the
+// resulting state (INV-31): a passed stage must never sit behind an open one. There is no automatic
+// cascade (reopening a later stage is the call of the side that owns it), so the caller names every stage
+// it reopens. Applies to every path that produces such a change set. NOT_APPLICABLE counts like PASSED
+// for ordering, so a later N/A stage is fine.
+func checkLaterStages(in Input, after map[string]json.RawMessage) error {
+	var reopened, later []string
+	seen := map[string]bool{}
+	for _, c := range in.Changes {
+		key := strings.TrimPrefix(c.Key, "stage.")
+		if key == c.Key {
+			continue
+		}
+		if st, _ := Str(c.New); st != StateOpen {
+			continue
+		}
+		seq := in.Cfg.StageSeq(key)
+		if seq == 0 {
+			continue // builtin reports UNKNOWN_STAGE
+		}
+		reopened = append(reopened, key)
+		for _, s := range in.Cfg.Stages {
+			if st, _ := Str(after["stage."+s.Key]); s.Seq > seq && st == StatePass && !seen[s.Key] {
+				seen[s.Key] = true
+				later = append(later, s.Key)
+			}
+		}
+	}
+	if len(later) == 0 {
+		return nil
+	}
+	sort.Strings(reopened)
+	return NewError(StatusFailedPrecondition, "REGRESS_LATER_STAGES_PASSED",
+		"reopening %s would leave later stage(s) %s PASSED; include them in the change (reopening them is subject to the rules of their own side)",
+		strings.Join(reopened, ", "), strings.Join(later, ", ")).
+		With("stages", strings.Join(later, ","))
 }
 
 // checkLive refuses every change to a soft-deleted entity except the one that restores it, and every

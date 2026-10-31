@@ -378,40 +378,14 @@ func (s *Server) regressStage(q *request, id int64) error {
 	if o.Reason == "" {
 		return core.NewError(core.StatusFailedPrecondition, "REASON_REQUIRED", "regressing a stage requires a reject reason").With("required_kind", core.KindReject)
 	}
-	cfg, err := s.Store.LoadConfig(q.r.Context())
-	if err != nil {
-		return err
-	}
 	plan := func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
 		var out []store.PlannedChange
-		reopen := map[string]bool{}
 		for _, st := range body.Stages {
 			st = strings.ToLower(strings.TrimSpace(st))
 			if v, _ := core.Str(cur.Vals["stage."+st]); v != core.StatePass {
 				return nil, core.NewError(core.StatusFailedPrecondition, "NOT_REGRESSIBLE", "stage %q is not PASSED", st).With("stage", st)
 			}
-			reopen[st] = true
 			out = append(out, store.PlannedChange{Key: "stage." + st, New: strRaw(core.StateOpen)})
-		}
-		// no cascade: a later stage left PASSED would sit behind an open one, and reopening it is the
-		// other side's call (rule table, per stage), so the caller must name every stage it reopens
-		var later []string
-		for _, def := range cfg.Stages {
-			if v, _ := core.Str(cur.Vals["stage."+def.Key]); v != core.StatePass || reopen[def.Key] {
-				continue
-			}
-			for st := range reopen {
-				if cfg.StageSeq(st) < def.Seq {
-					later = append(later, def.Key)
-					break
-				}
-			}
-		}
-		if len(later) > 0 {
-			return nil, core.NewError(core.StatusFailedPrecondition, "REGRESS_LATER_STAGES_PASSED",
-				"regressing %s would leave later stage(s) %s PASSED; include them in stages (reopening them is subject to the rules of their own side)",
-				strings.Join(sortedKeys(reopen), ", "), strings.Join(later, ", ")).
-				With("stages", strings.Join(later, ","))
 		}
 		return out, nil
 	}

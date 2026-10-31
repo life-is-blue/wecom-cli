@@ -865,6 +865,13 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 		}
 	}
 
+	// the plan was read without locks: take the matched workflows' row locks (id order, like every
+	// writer) and see which are soft-deleted now. A row must never create or change under one (INV-30).
+	dead, err := lockMatchedWorkflows(ctx, tx, p.ID, pl)
+	if err != nil {
+		return nil, internalErr(err)
+	}
+
 	now := s.now()
 	w, err := newBulkWriter(ctx, tx, p.ID, actor, opts.Reason, now)
 	if err != nil {
@@ -902,6 +909,14 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 			case "create":
 				create, eff = true, core.ActionNew
 			}
+		}
+		if dead[dec.Match] && (update || dec.Action == core.ActionUnchanged) {
+			// its workflow was deleted since the plan was made: same as a row staged against a deleted
+			// workflow, a conflict that no resolution applies to; its tasks are skipped with it
+			pl.Counts[dec.Action]--
+			pl.Counts[core.ActionConflict]++
+			update, eff = false, core.ActionConflict
+			dec = core.Decision{Action: core.ActionConflict, Match: dec.Match, Changes: []core.KeyChange{{Key: "deleted", Old: core.JSON(true), Kind: core.ChangeConflict}}}
 		}
 		var parent int64        // the existing workflow the row's tasks hang under
 		var parentEv *bulkEvent // or the one created by this job; both unset when the row itself was skipped
@@ -1002,6 +1017,53 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 	b.State, b.AppliedAt, b.Summary = ImportApplied, sql.NullTime{Time: now, Valid: true}, sql.NullString{String: string(sj), Valid: true}
 	s.analyzeAfterBulk(ctx)
 	return b.result(p, pl.Invalid), nil
+}
+
+// lockMatchedWorkflows locks, in id order, the existing workflows the rows of the plan matched and
+// returns those that are soft-deleted (read after the lock, so the answer holds until commit).
+func lockMatchedWorkflows(ctx context.Context, tx *sql.Tx, projectID int64, pl *importPlan) (map[int64]bool, error) {
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, r := range pl.Rows {
+		if m := r.Dec.Match; m != 0 && !seen[m] {
+			seen[m] = true
+			ids = append(ids, m)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	dead := map[int64]bool{}
+	for i := 0; i < len(ids); i += 1000 {
+		chunk := ids[i:min(i+1000, len(ids))]
+		ph := placeholders(len(chunk))
+		args := append([]any{projectID}, idArgs(chunk)...)
+		lr, err := tx.QueryContext(ctx, `SELECT id FROM entity WHERE project_id = ? AND id IN (`+ph+`) ORDER BY id FOR UPDATE`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for lr.Next() { // drain: the rows are locked as the server produces them
+		}
+		lr.Close()
+		if err := lr.Err(); err != nil {
+			return nil, err
+		}
+		dr, err := tx.QueryContext(ctx, `SELECT entity_id FROM entity_latest WHERE k = 'deleted' AND JSON_UNQUOTE(v) = 'true' AND entity_id IN (`+ph+`)`, idArgs(chunk)...)
+		if err != nil {
+			return nil, err
+		}
+		for dr.Next() {
+			var id int64
+			if err := dr.Scan(&id); err != nil {
+				dr.Close()
+				return nil, err
+			}
+			dead[id] = true
+		}
+		dr.Close()
+		if err := dr.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return dead, nil
 }
 
 // applyTasks writes the tasks of one row under its workflow (parent): new tasks are created with
@@ -1151,6 +1213,48 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 		}
 		er.Close()
 	}
+	// a workflow this job created is deleted by the rollback, which does not cascade: a live task that
+	// someone else put under it would end up under a deleted workflow (INV-30), so it blocks the rollback
+	own := map[int64]bool{}
+	for _, ent := range entities {
+		own[ent] = true
+	}
+	var created []string
+	for _, e := range evs {
+		if first[e.Entity] == e.ID && !isTask[e.Entity] {
+			created = append(created, strconv.FormatInt(e.Entity, 10))
+		}
+	}
+	for i := 0; i < len(created); i += 1000 {
+		chunk := created[i:min(i+1000, len(created))]
+		args := make([]any, 0, len(chunk)+1)
+		for _, c := range chunk {
+			args = append(args, c)
+		}
+		tr, err := tx.QueryContext(ctx, `SELECT e.id FROM entity e
+			JOIN entity_latest lw ON lw.entity_id = e.id AND lw.k = 'workflow' AND JSON_UNQUOTE(lw.v) IN (`+placeholders(len(chunk))+`)
+			LEFT JOIN entity_latest ld ON ld.entity_id = e.id AND ld.k = 'deleted'
+			WHERE e.project_id = ? AND e.type = 'task' AND COALESCE(JSON_UNQUOTE(ld.v), 'false') <> 'true' ORDER BY e.id`,
+			append(args, p.ID)...)
+		if err != nil {
+			return nil, internalErr(err)
+		}
+		for tr.Next() {
+			var id int64
+			if err := tr.Scan(&id); err != nil {
+				tr.Close()
+				return nil, internalErr(err)
+			}
+			if !own[id] {
+				isTask[id] = true
+				blocked = append(blocked, id) // not in the job, so it cannot already be listed above
+			}
+		}
+		tr.Close()
+		if err := tr.Err(); err != nil {
+			return nil, internalErr(err)
+		}
+	}
 	if len(blocked) > 0 {
 		sort.Slice(blocked, func(i, j int) bool { return blocked[i] < blocked[j] })
 		var names []string
@@ -1165,7 +1269,7 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 			}
 		}
 		return nil, core.NewError(core.StatusFailedPrecondition, "ROLLBACK_BLOCKED",
-			"%d workflow(s)/task(s) were changed after the import by someone else; roll back is refused: %s", len(blocked), strings.Join(names, ", ")).
+			"%d workflow(s)/task(s) were changed after the import by someone else, or sit under a workflow the import created; roll back is refused: %s", len(blocked), strings.Join(names, ", ")).
 			With("count", strconv.Itoa(len(blocked))).With("workflows", strings.Join(names, ","))
 	}
 

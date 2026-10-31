@@ -169,6 +169,9 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 	if err != nil {
 		return nil, err
 	}
+	if req.EntityType == "task" {
+		planned = dropStaleCascade(cur, planned)
+	}
 	seen := map[string]int{}
 	var changes []core.Change
 	for _, p := range planned {

@@ -38,7 +38,7 @@ Endpoints (see `api/openapi.yaml`): `POST /v1/projects/{p}/importJobs` (stage), 
 
 ## Classification (diff)
 
-Matching order: platform code, then `source.system` + `source.reference`; a row with no code and no reference is matched by name + `labels.group` (case-insensitive) -> SUSPECT; otherwise NEW. Soft-deleted workflows are matched too.
+Matching order: platform code, then `source.system` + `source.reference`; a row with no code and no reference is matched by name + `labels.group` (case-insensitive) -> SUSPECT; otherwise NEW. Soft-deleted workflows are matched too; a row whose matched workflow is deleted when the job is applied (even one staged UNCHANGED) counts as a CONFLICT that no resolution applies to: the row and its tasks are skipped, never created or changed under a deleted workflow.
 
 * UNCHANGED: matched and `row_hash` equals the stored `source.hash`.
 * CHANGED: otherwise; source-owned keys (display_name, source.*) differ, or platform-owned keys that were never set can be filled.
@@ -56,6 +56,6 @@ Diff lines: `{row_no, source, action, match, changes:[{key, old_value, new_value
 
 Tasks: a NEW task becomes a `task` entity with its source keys and its workflow (`workflow` = the workflow's entity id, the workflow being the matched one or the one this job creates; a task has exactly one) and one event `imp-<job>-<row_no>-<n>` (note `import job <id> row <n> task <system>:<reference>`); a CHANGED task gets its source-owned and fill changes. Tasks follow their row: they are skipped when the workflow row itself is skipped (unresolved CONFLICT/SUSPECT or `skip`), and a TASK_CONFLICT is only merged (source-owned updates) when the row's resolution is `merge`. An existing task is not re-linked to another workflow. Writes are batched (about 3000 workflows with 10500 tasks apply in roughly 4 s on a local MySQL 8).
 
-`:rollback` writes correcting events (`corrects_event_id` = the import event, key `imprb-<job>-<event>`); created workflows and tasks are reverted and soft-deleted, updated ones get correcting events. Refused with FAILED_PRECONDITION `ROLLBACK_BLOCKED` (metadata `count`, `workflows`; the list may name tasks too) if any event not written by the job touched one of its entities (workflows or tasks) afterwards (person edit or a later import). Second rollback is a no-op.
+`:rollback` writes correcting events (`corrects_event_id` = the import event, key `imprb-<job>-<event>`); created workflows and tasks are reverted and soft-deleted, updated ones get correcting events. Refused with FAILED_PRECONDITION `ROLLBACK_BLOCKED` (metadata `count`, `workflows`; the list may name tasks too) if any event not written by the job touched one of its entities (workflows or tasks) afterwards (person edit or a later import), or if a live task that is not the job's sits under a workflow the job created (rolling back deletes that workflow without cascading, and never deletes what a person created). Second rollback is a no-op.
 
 Both return `Operation{name, done:true, response: ImportJob}`.

@@ -195,6 +195,22 @@ func TestHappyPath(t *testing.T) {
 	f.wantOK(f.do(f.admin, "POST", path+":regressStage", map[string]any{"stages": []string{"dual_run"}, "reason": "rej_row_count"}))
 	f.wantOK(f.do(f.cust, "POST", path+":regressStage", map[string]any{"stages": []string{"accept"}, "reason": "rej_row_count"}))
 
+	// INV-31 holds on every path: PATCH stages may not reopen a stage while a later one stays PASSED either
+	f.wantOK(f.do(f.cust, "POST", path+":advanceStage", map[string]any{"stage": "accept"}))
+	f.wantOK(f.do(f.admin, "POST", path+":advanceStage", map[string]any{"stage": "dual_run"}))
+	reopen := func(stage string) resp {
+		return f.do(f.editor, "PATCH", path+"?update_mask=stages", map[string]any{"reason": "rej_row_count",
+			"workflow": map[string]any{"stages": []any{map[string]any{"stage": stage, "state": "OPEN"}}}})
+	}
+	pr := reopen("verify")
+	f.wantErr(pr, 400, "FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
+	if md := pr.body["error"].(map[string]any)["details"].([]any)[0].(map[string]any)["metadata"].(map[string]any); md["stages"] != "accept,dual_run" {
+		t.Fatalf("metadata %v", md)
+	}
+	f.wantErr(reopen("development"), 400, "FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
+	f.wantOK(f.do(f.admin, "POST", path+":regressStage", map[string]any{"stages": []string{"dual_run"}, "reason": "rej_row_count"}))
+	f.wantOK(f.do(f.cust, "POST", path+":regressStage", map[string]any{"stages": []string{"accept"}, "reason": "rej_row_count"}))
+
 	// comments -> health
 	c := f.wantOK(f.do(f.editor, "POST", path+"/comments", map[string]any{"kind": "ISSUE", "body": "目标库权限未开通"}))
 	cname := str(c.body, "name")
