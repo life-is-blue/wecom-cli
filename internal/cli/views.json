@@ -1,0 +1,41 @@
+[
+  {"name": "workflows", "description": "One row per live workflow with derived stage and health.",
+   "columns": [
+    {"name": "id", "type": "bigint"}, {"name": "code", "type": "varchar", "note": "WF-000123"},
+    {"name": "project_id", "type": "bigint"}, {"name": "name", "type": "varchar"},
+    {"name": "scope", "type": "varchar", "note": "in|out"}, {"name": "attrs", "type": "json", "note": "labels"},
+    {"name": "current_stage", "type": "varchar", "note": "NULL when all stages are done"},
+    {"name": "open_issues", "type": "bigint"}, {"name": "open_risks", "type": "bigint"},
+    {"name": "health", "type": "varchar", "note": "ok|at_risk|blocked"}]},
+  {"name": "tasks", "description": "One row per live task.",
+   "columns": [
+    {"name": "id", "type": "bigint"}, {"name": "code", "type": "varchar", "note": "TK-000456"},
+    {"name": "project_id", "type": "bigint"}, {"name": "name", "type": "varchar"},
+    {"name": "attrs", "type": "json"}, {"name": "primary_workflow_id", "type": "bigint"}]},
+  {"name": "events", "description": "Audit log: one row per changed key of every event.",
+   "columns": [
+    {"name": "event_id", "type": "bigint"}, {"name": "project_id", "type": "bigint"},
+    {"name": "entity_id", "type": "bigint"}, {"name": "type", "type": "varchar", "note": "workflow|task|comment|attachment"},
+    {"name": "actor", "type": "varchar"}, {"name": "side", "type": "varchar"}, {"name": "channel", "type": "varchar"},
+    {"name": "reason_key", "type": "varchar"}, {"name": "note", "type": "text"},
+    {"name": "corrects_event_id", "type": "bigint"}, {"name": "event_time", "type": "datetime"},
+    {"name": "create_time", "type": "datetime"}, {"name": "k", "type": "varchar", "note": "e.g. stage.development"},
+    {"name": "old_v", "type": "json"}, {"name": "new_v", "type": "json"}]},
+  {"name": "comments", "description": "One row per comment.",
+   "columns": [
+    {"name": "id", "type": "bigint"}, {"name": "project_id", "type": "bigint"},
+    {"name": "workflow_id", "type": "bigint"}, {"name": "kind", "type": "varchar", "note": "note|question|issue|risk"},
+    {"name": "body", "type": "text"}, {"name": "resolved", "type": "boolean"}, {"name": "deleted", "type": "boolean"}]},
+  {"name": "workflow_stages", "description": "Every stage of every workflow; no change means open.",
+   "columns": [
+    {"name": "workflow_id", "type": "bigint"}, {"name": "stage_key", "type": "varchar"},
+    {"name": "seq", "type": "int"}, {"name": "status", "type": "varchar", "note": "open|pass|na"}]},
+  {"name": "stage_distribution", "description": "In-scope workflows grouped by current stage and health.",
+   "columns": [
+    {"name": "project_id", "type": "bigint"}, {"name": "stage", "type": "varchar", "note": "done when finished"},
+    {"name": "health", "type": "varchar"}, {"name": "workflows", "type": "bigint"}]},
+  {"name": "open_items", "description": "Unresolved issues, risks and questions per workflow.",
+   "columns": [
+    {"name": "workflow_id", "type": "bigint"}, {"name": "open_issues", "type": "bigint"},
+    {"name": "open_risks", "type": "bigint"}, {"name": "open_questions", "type": "bigint"}]}
+]
