@@ -34,6 +34,18 @@ var (
 	envTrustProxy         = "OPENETL_TRUST_PROXY"
 )
 
+// DefaultProjectStorageQuota is the default cap on the total size of a project's registered attachments.
+const DefaultProjectStorageQuota = int64(10) << 30
+
+const envProjectQuota = "OPENETL_PROJECT_STORAGE_QUOTA_BYTES"
+
+func projectStorageQuota() int64 {
+	if v, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(envProjectQuota)), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return DefaultProjectStorageQuota
+}
+
 type reservation struct {
 	size    int64
 	expires time.Time
@@ -332,6 +344,14 @@ func (s *Server) createAttachment(q *request, wf int64) error {
 	}
 	committed := false
 	if !registered {
+		used, err := s.Store.ProjectAttachmentBytes(q.r.Context(), p)
+		if err != nil {
+			return err
+		}
+		if limit := projectStorageQuota(); used+body.Size > limit {
+			return core.NewError(core.StatusResourceExhausted, "PROJECT_STORAGE_QUOTA_EXCEEDED",
+				"the project's attachment storage quota (%d bytes) would be exceeded (%d bytes already registered)", limit, used)
+		}
 		// the server hashes the staged bytes itself; the client's sha256 is only compared
 		verr := error(nil)
 		if o.ValidateOnly {

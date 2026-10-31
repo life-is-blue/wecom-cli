@@ -189,6 +189,9 @@ func (a *App) putFile(target string, headers *map[string]string, fi fileInfo) er
 	if err != nil {
 		return err
 	}
+	if r.tokenErr != nil {
+		return r.tokenErr
+	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return runtimef("bad upload_url: %v", err)

@@ -8,7 +8,8 @@
 //
 // Environment: OPENETL_DB_DSN (go-sql-driver DSN, required), OPENETL_ADDR (default :8080),
 // OPENETL_QUERY_DSN (optional SELECT-only DSN for the query endpoint), OPENETL_PUBLIC_URL,
-// OPENETL_TRUST_PROXY=1, OPENETL_ALLOW_GLOBAL_CONFIG=1 (see docs/security.md).
+// OPENETL_TRUST_PROXY=1, OPENETL_ALLOW_GLOBAL_CONFIG=1, OPENETL_QUERY_MAX_PER_ACCOUNT, OPENETL_QUERY_MAX_TOTAL,
+// OPENETL_PROJECT_STORAGE_QUOTA_BYTES (see docs/security.md).
 package main
 
 import (
@@ -103,7 +104,7 @@ func serve() error {
 		}
 		log.Println("query endpoint uses OPENETL_QUERY_DSN")
 	} else {
-		log.Println("WARNING: OPENETL_QUERY_DSN is not set; user SQL runs with the gateway's main database credentials. " +
+		log.Println("WARNING: OPENETL_QUERY_DSN is not set; user SQL runs on a separate small pool but with the gateway's main database credentials. " +
 			"Create a SELECT-only user (scripts/create-query-user.sql) and point OPENETL_QUERY_DSN at it.")
 	}
 	addr := os.Getenv("OPENETL_ADDR")

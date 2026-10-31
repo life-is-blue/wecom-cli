@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 
 type resolved struct {
 	base, token, tokenSource, project string
+	// tokenErr is set when the saved token must not be sent to the effective base URL (see resolve).
+	tokenErr error
 }
 
 func (a *App) store() *credentials.Store {
@@ -48,6 +51,16 @@ func (a *App) resolve() (*resolved, error) {
 			r.project = firstNonEmpty(r.project, c.Project)
 			if r.token == "" && c.Token != "" {
 				r.token, r.tokenSource = c.Token, "store"
+				r.base = strings.TrimRight(r.base, "/")
+				switch {
+				case c.BaseURL == "":
+					fmt.Fprintf(a.Stderr, "warning: the saved token is not bound to a base URL (saved by an older version); run `openetl auth login` again to bind it\n")
+				case !sameBase(r.base, c.BaseURL):
+					// never send the saved token to a URL it was not issued for (e.g. a redirected --base-url)
+					r.token = ""
+					r.tokenErr = usagef("the saved token belongs to %s, not %s; run `openetl auth login --base-url %s` for that URL (or pass the token explicitly via %s)",
+						c.BaseURL, r.base, r.base, EnvToken)
+				}
 			}
 		case errors.Is(err, credentials.ErrNotFound):
 		case r.token == "":
@@ -60,6 +73,13 @@ func (a *App) resolve() (*resolved, error) {
 	}
 	a.resolved = r
 	return r, nil
+}
+
+// sameBase reports whether two base URLs have the same scheme, host and port.
+func sameBase(a, b string) bool {
+	ua, ea := url.Parse(a)
+	ub, eb := url.Parse(b)
+	return ea == nil && eb == nil && ua.Host != "" && ub.Host != "" && sameOrigin(ua, ub)
 }
 
 func firstNonEmpty(v ...string) string {
@@ -87,6 +107,9 @@ func (a *App) call(method, path string, q url.Values, body any) ([]byte, error) 
 	r, err := a.resolve()
 	if err != nil {
 		return nil, err
+	}
+	if r.tokenErr != nil {
+		return nil, r.tokenErr
 	}
 	return a.callWith(r.base, r.token, method, path, q, body)
 }

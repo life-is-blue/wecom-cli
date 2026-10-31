@@ -211,7 +211,7 @@ func (s *Server) query(q *request) error {
 	if body.PageToken != nil {
 		tok = *body.PageToken
 	}
-	resp, err := s.Store.Query(q.r.Context(), q.pr.project(), body.Sql, ps, tok)
+	resp, err := s.Store.Query(store.WithQueryAccount(q.r.Context(), q.pr.Account.UserName), q.pr.project(), body.Sql, ps, tok)
 	if err != nil {
 		return err
 	}

@@ -215,7 +215,16 @@ func (s *S3) Commit(ctx context.Context, stagingKey, finalKey string, size int64
 	if etag != "" {
 		in.CopySourceIfMatch = &etag
 	}
+	in.IfNoneMatch = aws.String("*") // conditional copy: never overwrite an existing final key
 	if _, err := s.cli.CopyObject(ctx, in); err != nil {
+		var ae smithy.APIError
+		if errors.As(err, &ae) && (ae.ErrorCode() == "PreconditionFailed" || ae.ErrorCode() == "ConditionalRequestConflict") {
+			// either the final key now exists or the staged object changed after verification
+			if _, _, herr := s.headETag(ctx, fk); herr == nil {
+				return ErrExists
+			}
+			return ErrHashMismatch
+		}
 		return err
 	}
 	_, err = s.cli.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &sk})

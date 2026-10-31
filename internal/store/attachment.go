@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -160,4 +161,12 @@ func (s *Store) StorageKeyRegisteredBy(ctx context.Context, p Project, key, requ
 		}
 	}
 	return true, false, nil
+}
+
+// ProjectAttachmentBytes is the total size of the project's registered attachments.
+func (s *Store) ProjectAttachmentBytes(ctx context.Context, p Project) (int64, error) {
+	var n sql.NullInt64
+	err := s.DB.QueryRowContext(ctx, `SELECT SUM(CAST(JSON_UNQUOTE(l.v) AS UNSIGNED)) FROM entity_latest l JOIN entity e ON e.id = l.entity_id
+		WHERE l.k = 'size' AND e.project_id = ? AND e.type = 'attachment'`, p.ID).Scan(&n)
+	return n.Int64, internalErr(err)
 }

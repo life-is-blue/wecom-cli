@@ -34,6 +34,10 @@ var deniedWords = map[string]bool{
 	"VALUE": true, "ROW": true, "LATERAL": true, "WINDOW": true, "OVER": true, "PARTITION": true,
 	"USE": true, "IGNORE": true, "FORCE": true, "STRAIGHT_JOIN": true, "DUAL": true, "EXISTS": true,
 	"ANY": true, "SOME": true, "RETURNING": true,
+	// system information, even without parentheses
+	"CURRENT_USER": true, "SESSION_USER": true, "SYSTEM_USER": true, "USER": true, "DATABASE": true, "SCHEMA": true,
+	"VERSION": true, "CONNECTION_ID": true, "LAST_INSERT_ID": true, "ROW_COUNT": true, "FOUND_ROWS": true,
+	"CURRENT_ROLE": true, "CATALOG": true,
 }
 
 // allowedFuncs are the only names that may be followed by '('. All are deterministic and side-effect free.
@@ -261,6 +265,11 @@ func GuardQuery(sqlText string, projectID int64) (string, error) {
 				if !hasAlias {
 					sub += " AS `" + name + "`"
 				}
+				if up == "JOIN" {
+					if err := checkJoinCondition(toks, j); err != nil {
+						return "", err
+					}
+				}
 				repls = append(repls, repl{next.start, next.end, sub})
 				i++ // the view name token is consumed (alias tokens are plain identifiers)
 				continue
@@ -300,4 +309,86 @@ func GuardQuery(sqlText string, projectID int64) (string, error) {
 	}
 	b.WriteString(sqlText[last:])
 	return strings.TrimRight(strings.TrimSpace(b.String()), "; \n\t"), nil
+}
+
+// joinEnders end the ON condition of a JOIN (top level).
+var joinEnders = map[string]bool{
+	"JOIN": true, "INNER": true, "LEFT": true, "RIGHT": true, "CROSS": true, "NATURAL": true, "FULL": true, "OUTER": true,
+	"WHERE": true, "GROUP": true, "HAVING": true, "ORDER": true, "LIMIT": true, "OFFSET": true,
+}
+
+var cmpOps = map[string]bool{"=": true, "<": true, ">": true, "!": true}
+
+func isConstTok(t sqlTok) bool {
+	if t.kind == 'n' || t.kind == 's' {
+		return true
+	}
+	if t.kind == 'w' {
+		switch strings.ToUpper(t.text) {
+		case "TRUE", "FALSE", "NULL":
+			return true
+		}
+	}
+	return false
+}
+
+// checkJoinCondition requires the JOIN whose view and alias end before toks[j] to carry a real
+// condition: ON/USING is mandatory, and an ON that is constant-true (ON 1, ON true, ON 1=1,
+// ... OR 1) would make a cartesian product that can exhaust the database.
+func checkJoinCondition(toks []sqlTok, j int) error {
+	if j >= len(toks) || toks[j].kind != 'w' {
+		return invalidSQL("a JOIN needs an ON or USING clause on real columns (cartesian joins are not allowed)")
+	}
+	kw := strings.ToUpper(toks[j].text)
+	if kw == "USING" {
+		return nil
+	}
+	if kw != "ON" {
+		return invalidSQL("a JOIN needs an ON or USING clause on real columns (cartesian joins are not allowed)")
+	}
+	k := j + 1
+	depth := 0
+	var cond []sqlTok
+	for ; k < len(toks); k++ {
+		t := toks[k]
+		if t.kind == 'p' && t.text == "(" {
+			depth++
+		} else if t.kind == 'p' && t.text == ")" {
+			depth--
+		} else if depth == 0 && t.kind == 'w' && joinEnders[strings.ToUpper(t.text)] {
+			break
+		}
+		cond = append(cond, t)
+	}
+	hasCol := false
+	for i, t := range cond {
+		if t.kind == 'q' || (t.kind == 'w' && !isConstTok(t) && !keywordsBeforeParen[strings.ToUpper(t.text)] && !allowedFuncs[strings.ToUpper(t.text)]) {
+			hasCol = true
+		}
+		// constant comparison: const op const
+		if isConstTok(t) && i+2 < len(cond) {
+			o := i + 1
+			if cond[o].kind == 'p' && cmpOps[cond[o].text] {
+				o++
+				if cond[o].kind == 'p' && cond[o].text == "=" {
+					o++
+				}
+				if o < len(cond) && isConstTok(cond[o]) {
+					return invalidSQL("constant ON conditions are not allowed; join on real columns")
+				}
+			}
+		}
+		// a constant standing alone as a boolean operand (ON 1, ... OR TRUE)
+		if t.kind == 'n' || (t.kind == 'w' && (strings.EqualFold(t.text, "TRUE"))) {
+			prevOK := i == 0 || (cond[i-1].kind == 'w' && (strings.EqualFold(cond[i-1].text, "OR") || strings.EqualFold(cond[i-1].text, "AND"))) || (cond[i-1].kind == 'p' && cond[i-1].text == "(")
+			nextOK := i+1 >= len(cond) || (cond[i+1].kind == 'w' && (strings.EqualFold(cond[i+1].text, "OR") || strings.EqualFold(cond[i+1].text, "AND"))) || (cond[i+1].kind == 'p' && cond[i+1].text == ")")
+			if prevOK && nextOK {
+				return invalidSQL("constant ON conditions are not allowed; join on real columns")
+			}
+		}
+	}
+	if !hasCol {
+		return invalidSQL("the ON condition must compare real columns")
+	}
+	return nil
 }

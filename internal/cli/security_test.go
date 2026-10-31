@@ -86,3 +86,63 @@ func TestPresignedSamePortGetsNoTokenAcrossSchemes(t *testing.T) {
 		t.Fatalf("%d %s auth=%q", code, errs, storageAuth)
 	}
 }
+
+func TestStoredTokenBoundToBaseURL(t *testing.T) {
+	a := newFake(t)
+	b := newFake(t)
+	e := newEnv(t, a)
+	delete(e.vars, "OPENETL_TOKEN")
+	if code, _, errs := e.run("good-token\n", "auth", "login", "--token-stdin"); code != 0 {
+		t.Fatalf("login: %d %s", code, errs)
+	}
+	// same origin works (also when the env override spells the same URL)
+	if code, _, errs := e.run("", "auth", "status"); code != 0 {
+		t.Fatalf("status on the saved base: %d %s", code, errs)
+	}
+	// a different base URL, by env or flag, must not receive the saved token: nothing is sent at all
+	e.vars["OPENETL_BASE_URL"] = b.srv.URL
+	for _, args := range [][]string{{"auth", "status"}, {"--base-url", b.srv.URL, "auth", "status"}, {"workflow", "list"}} {
+		code, _, errs := e.run("", args...)
+		if code != 2 || !strings.Contains(errs, "auth login") || !strings.Contains(errs, a.srv.URL) {
+			t.Fatalf("%v: want usage error, got %d %s", args, code, errs)
+		}
+	}
+	if len(b.reqs) != 0 {
+		t.Fatalf("saved token was sent to another base URL: %+v", b.reqs)
+	}
+	// ... but an explicit OPENETL_TOKEN is the caller's choice and goes to the effective base URL
+	e.vars["OPENETL_TOKEN"] = "good-token"
+	if code, _, errs := e.run("", "auth", "status"); code != 0 || len(b.reqs) != 1 || b.reqs[0].Auth != "Bearer good-token" {
+		t.Fatalf("env token: %d %s %+v", code, errs, b.reqs)
+	}
+	// logging in for the new URL re-binds the token
+	delete(e.vars, "OPENETL_TOKEN")
+	if code, _, errs := e.run("good-token\n", "auth", "login", "--token-stdin"); code != 0 {
+		t.Fatalf("login on b: %d %s", code, errs)
+	}
+	if code, _, errs := e.run("", "auth", "status"); code != 0 {
+		t.Fatalf("status after re-login: %d %s", code, errs)
+	}
+}
+
+func TestLegacyCredentialsWithoutBaseURLWarnOnce(t *testing.T) {
+	f := newFake(t)
+	e := newEnv(t, f)
+	delete(e.vars, "OPENETL_TOKEN")
+	a := &App{Getenv: func(k string) string {
+		if k == "HOME" {
+			return e.home
+		}
+		return ""
+	}, Keyring: failKR{}}
+	if err := a.store().Save(credentialsOf("", "acme-dw", "good-token")); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errs := e.run("", "auth", "status")
+	if code != 0 {
+		t.Fatalf("legacy credentials must stay usable: %d %s", code, errs)
+	}
+	if strings.Count(errs, "not bound to a base URL") != 1 {
+		t.Fatalf("want exactly one warning: %q", errs)
+	}
+}

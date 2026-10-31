@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -25,6 +26,14 @@ type Store struct {
 	// QueryDB, when set, is the (ideally SELECT-only on the public views) pool used for user SQL.
 	QueryDB *sql.DB
 	Now     func() time.Time // injectable clock; defaults to time.Now().UTC()
+
+	dsn                         string // normalized main DSN, used for the lazily opened dedicated query pool
+	qOnce                       sync.Once
+	qdb                         *sql.DB
+	qErr                        error
+	qlim                        queryLimiter
+	qlimOnce                    sync.Once
+	QueryPerAccount, QueryTotal int // concurrency caps for user SQL; <=0 means the env/default value
 }
 
 // Open connects to MySQL. The DSN is a go-sql-driver DSN; parseTime and UTC are forced.
@@ -49,7 +58,7 @@ func Open(dsn string) (*Store, error) {
 		d.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	return &Store{DB: d}, nil
+	return &Store{DB: d, dsn: cfg.FormatDSN()}, nil
 }
 
 // OpenQuery opens the separate pool used for user queries (OPENETL_QUERY_DSN) and attaches it.
@@ -58,6 +67,7 @@ func (s *Store) OpenQuery(dsn string) error {
 	if err != nil {
 		return err
 	}
+	q.DB.SetMaxOpenConns(QueryPoolSize)
 	s.QueryDB = q.DB
 	return nil
 }
@@ -66,6 +76,9 @@ func (s *Store) OpenQuery(dsn string) error {
 func (s *Store) Close() error {
 	if s.QueryDB != nil {
 		s.QueryDB.Close()
+	}
+	if s.qdb != nil {
+		s.qdb.Close()
 	}
 	return s.DB.Close()
 }

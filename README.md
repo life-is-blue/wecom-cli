@@ -39,7 +39,7 @@ Numbers and the seeding/measuring scripts: `docs/performance.md`.
 ## Security notes
 
 The query endpoint (`openetl query`) accepts one `SELECT` over the seven public views only (no subqueries, `UNION`,
-CTEs, comma joins or parentheses after `FROM`/`JOIN`); every view reference is rewritten with the project filter.
+CTEs, comma joins, joins without a real `ON`/`USING` condition, or parentheses after `FROM`/`JOIN`); every view reference is rewritten with the project filter.
 As a second layer, run it over a database user that can only `SELECT` those views:
 
 ```bash
@@ -47,6 +47,10 @@ As a second layer, run it over a database user that can only `SELECT` those view
 mysql -u root -p < scripts/create-query-user.sql
 export OPENETL_QUERY_DSN='openetl_query:PASSWORD@tcp(db-host:3306)/openetl'   # gateway env; without it the main DSN is used (startup warning)
 ```
+
+Query limits (gateway): `OPENETL_QUERY_MAX_PER_ACCOUNT` (default 3) and `OPENETL_QUERY_MAX_TOTAL` (default 6) concurrent queries,
+over a dedicated 8-connection pool; excess requests get `429` + `Retry-After`. `OPENETL_PROJECT_STORAGE_QUOTA_BYTES` caps the
+registered attachment bytes per project (default 10 GiB). `auth login` binds the saved token to its base URL.
 
 Other switches: `OPENETL_PUBLIC_URL` (base of signed blob URLs), `OPENETL_TRUST_PROXY=1` (honour `X-Forwarded-*`),
 `OPENETL_ALLOW_GLOBAL_CONFIG=1` (config updates on multi-project instances), client `OPENETL_ALLOW_HTTP=1`

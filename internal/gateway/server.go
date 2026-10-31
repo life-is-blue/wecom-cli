@@ -111,6 +111,9 @@ func (s *Server) writeErr(w http.ResponseWriter, err error) {
 		info.Metadata = &md
 	}
 	out.Error.Details = &[]api.ErrorInfo{info}
+	if ra := ce.Metadata["retry_after_seconds"]; ra != "" && ce.Status == core.StatusResourceExhausted {
+		w.Header().Set("Retry-After", ra)
+	}
 	s.writeJSON(w, code, out)
 }
 

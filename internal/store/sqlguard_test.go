@@ -50,7 +50,19 @@ var guardBypasses = []string{
 	"SELECT * FROM entity", "SELECT * FROM v_workflow", "SELECT * FROM information_schema.tables", "SELECT * FROM mysql.user",
 	"SELECT * FROM Api_Token", "SELECT * FROM `API_TOKEN`", "SELECT * FROM tasks)", "SELECT (1", "UPDATE tasks SET a=1", "DELETE FROM tasks",
 	"SELECT * FROM tasks WINDOW w AS ()", "SELECT COUNT(*) OVER () FROM tasks", "HANDLER x OPEN", "SELECT 1 PROCEDURE ANALYSE()",
-	"SELECT :=1", "SELECT 1 FROM tasks LIMIT 1 OFFSET 1 UNION SELECT 2",
+	"SELECT :=1",
+	// cartesian-looking joins
+	"SELECT count(*) FROM workflows a JOIN workflows b ON 1 JOIN workflows c ON 1",
+	"SELECT * FROM workflows a JOIN workflows b", "SELECT * FROM workflows a CROSS JOIN workflows b",
+	"SELECT * FROM workflows a NATURAL JOIN workflows b", "SELECT * FROM workflows a JOIN workflows b ON true",
+	"SELECT * FROM workflows a JOIN workflows b ON 1=1", "SELECT * FROM workflows a JOIN workflows b ON (1)",
+	"SELECT * FROM workflows a JOIN workflows b ON 'a'='a'", "SELECT * FROM workflows a LEFT JOIN workflows b ON a.id = b.id OR 1",
+	"SELECT * FROM workflows a JOIN workflows b ON a.id = b.id OR 1=1", "SELECT * FROM workflows a JOIN workflows b ON a.id = b.id JOIN tasks c",
+	"SELECT * FROM workflows a JOIN workflows b ON a.id = b.id OR TRUE",
+	// system information, with or without parentheses
+	"SELECT current_user", "SELECT CURRENT_USER()", "SELECT session_user", "SELECT system_user", "SELECT user", "SELECT user()",
+	"SELECT database", "SELECT schema", "SELECT version", "SELECT connection_id", "SELECT last_insert_id", "SELECT row_count",
+	"SELECT found_rows", "SELECT id FROM workflows WHERE name = database", "SELECT @@global.version", "SELECT @@hostname", "SELECT 1 FROM tasks LIMIT 1 OFFSET 1 UNION SELECT 2",
 }
 
 func TestQueryGuardBypasses(t *testing.T) {
@@ -71,6 +83,10 @@ func TestQueryGuardAccepts(t *testing.T) {
 		"SELECT stage, COUNT(*) c, COALESCE(MAX(id), 0) FROM tasks GROUP BY stage HAVING COUNT(*) > 1 ORDER BY c DESC",
 		"SELECT CAST(id AS CHAR), JSON_UNQUOTE(JSON_EXTRACT(attrs, '$.a')) FROM workflows",
 		"SELECT 1",
+		"SELECT a.id FROM workflows a JOIN tasks b ON b.primary_workflow_id = a.id AND b.id > 0 JOIN events e ON e.workflow_id = a.id",
+		"SELECT a.id FROM workflows a JOIN tasks b USING (project_id)",
+		"SELECT a.id FROM workflows a LEFT JOIN tasks b ON a.id = b.primary_workflow_id OR b.id = a.id",
+		"SELECT a.id FROM workflows a INNER JOIN tasks `b` ON `b`.primary_workflow_id = a.id WHERE 1 = 1",
 	}
 	for _, q := range good {
 		out, err := GuardQuery(q, 7)
@@ -86,7 +102,7 @@ func TestQueryGuardAccepts(t *testing.T) {
 		}
 	}
 	// case-insensitive names and aliases are still rewritten
-	out, _ := GuardQuery("SELECT * FROM TASKS T JOIN Workflows W ON 1", 3)
+	out, _ := GuardQuery("SELECT * FROM TASKS T JOIN Workflows W ON T.id = W.id", 3)
 	if strings.Count(out, "project_id = 3") != 2 {
 		t.Errorf("both references must be filtered: %q", out)
 	}

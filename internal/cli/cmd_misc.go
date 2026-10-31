@@ -122,6 +122,9 @@ func (a *App) authStatus() *cobra.Command {
 				return err
 			}
 			st := map[string]any{"authenticated": false, "token_source": r.tokenSource, "base_url": r.base, "project": r.project}
+			if r.tokenErr != nil {
+				return r.tokenErr
+			}
 			if r.token == "" || r.base == "" {
 				_ = a.emitValue(st)
 				return &cliError{Exit: 1, Silent: true}

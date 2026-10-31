@@ -5,9 +5,15 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"log"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/life-is-blue/openetl-cli/internal/api"
 	"github.com/life-is-blue/openetl-cli/internal/core"
@@ -18,6 +24,12 @@ const (
 	queryStmtMS    = 10000 // server-side statement timeout in milliseconds
 	queryDefaultPS = 1000
 	queryMaxPS     = 1000
+	// QueryPoolSize is the connection cap of the dedicated query pool.
+	QueryPoolSize = 8
+	// DefaultQueryMaxPerAccount / DefaultQueryMaxTotal are the default concurrency caps for user SQL
+	// (OPENETL_QUERY_MAX_PER_ACCOUNT / OPENETL_QUERY_MAX_TOTAL).
+	DefaultQueryMaxPerAccount = 3
+	DefaultQueryMaxTotal      = 6
 	// QueryMaxBytes is the default cap of the JSON size of one query response page.
 	QueryMaxBytes = 8 << 20
 )
@@ -48,12 +60,120 @@ func setStatementTimeout(ctx context.Context, conn *sql.Conn) (func(), error) {
 	}, nil
 }
 
-// queryDB is the handle used for user SQL: the dedicated read-only pool when configured.
-func (s *Store) queryDB() *sql.DB {
+// queryDB is the handle used for user SQL: always a dedicated, small pool, so user queries can never
+// starve the connections used by authentication and writes. It is the OPENETL_QUERY_DSN pool when
+// configured, otherwise a separate pool opened (lazily) on the main DSN.
+func (s *Store) queryDB() (*sql.DB, error) {
 	if s.QueryDB != nil {
-		return s.QueryDB
+		return s.QueryDB, nil
 	}
-	return s.DB
+	s.qOnce.Do(func() {
+		if s.dsn == "" {
+			s.qErr = errors.New("no dsn available for the query pool")
+			return
+		}
+		q, err := Open(s.dsn)
+		if err != nil {
+			s.qErr = err
+			return
+		}
+		q.DB.SetMaxOpenConns(QueryPoolSize)
+		s.qdb = q.DB
+	})
+	if s.qErr != nil {
+		return nil, s.qErr
+	}
+	return s.qdb, nil
+}
+
+type queryAcctKey struct{}
+
+// WithQueryAccount tags ctx with the account whose query concurrency is limited.
+func WithQueryAccount(ctx context.Context, account string) context.Context {
+	return context.WithValue(ctx, queryAcctKey{}, account)
+}
+
+// queryLimiter caps concurrent user queries per account and in total. It never queues: a caller over
+// the limit is refused at once.
+type queryLimiter struct {
+	mu       sync.Mutex
+	total    int
+	perAcct  map[string]int
+	maxAcct  int
+	maxTotal int
+}
+
+func envInt(name string, def int) int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name))); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+// AcquireQuerySlot takes one query-concurrency slot for the account (see Query); call the returned func to release it.
+func (s *Store) AcquireQuerySlot(account string) (func(), error) { return s.acquireQuery(account) }
+
+func (s *Store) acquireQuery(account string) (func(), error) {
+	s.qlimOnce.Do(func() {
+		s.qlim.perAcct = map[string]int{}
+		s.qlim.maxAcct = s.QueryPerAccount
+		if s.qlim.maxAcct <= 0 {
+			s.qlim.maxAcct = envInt("OPENETL_QUERY_MAX_PER_ACCOUNT", DefaultQueryMaxPerAccount)
+		}
+		s.qlim.maxTotal = s.QueryTotal
+		if s.qlim.maxTotal <= 0 {
+			s.qlim.maxTotal = envInt("OPENETL_QUERY_MAX_TOTAL", DefaultQueryMaxTotal)
+		}
+	})
+	l := &s.qlim
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.perAcct[account] >= l.maxAcct {
+		return nil, core.NewError(core.StatusResourceExhausted, "QUERY_TOO_MANY_CONCURRENT",
+			"too many concurrent queries for this account (max %d); retry shortly", l.maxAcct).With("retry_after_seconds", "1")
+	}
+	if l.total >= l.maxTotal {
+		return nil, core.NewError(core.StatusResourceExhausted, "QUERY_SERVER_BUSY",
+			"the query service is busy (max %d concurrent queries); retry shortly", l.maxTotal).With("retry_after_seconds", "1")
+	}
+	l.total++
+	l.perAcct[account]++
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.total--
+		if l.perAcct[account]--; l.perAcct[account] <= 0 {
+			delete(l.perAcct, account)
+		}
+	}, nil
+}
+
+// MySQL/MariaDB error numbers caused by the user's SQL text (not by the server): their number is
+// returned, their text (which can name databases and tables) is not.
+var userSQLErrors = map[uint16]bool{
+	1052: true, 1054: true, 1055: true, 1064: true, 1066: true, 1111: true, 1139: true, 1140: true, 1241: true, 1242: true,
+	1248: true, 1249: true, 1267: true, 1270: true, 1271: true, 1305: true, 1318: true, 1364: true, 1365: true, 1366: true,
+	1367: true, 1408: true, 1525: true, 1582: true, 1583: true, 1690: true, 3143: true, 3144: true, 3146: true, 3156: true,
+	3141: true, 3140: true, 4078: true,
+}
+
+// queryFailed maps a database error to a client error without leaking its text; the raw error is logged.
+func queryFailed(err error) error {
+	log.Printf("query failed: %v", err)
+	var me *mysql.MySQLError
+	if errors.As(err, &me) {
+		switch me.Number {
+		case 3024, 1969:
+			return core.NewError(core.StatusInvalidArgument, "QUERY_FAILED", "query failed: it exceeded the time limit")
+		}
+		if userSQLErrors[me.Number] {
+			return core.NewError(core.StatusInvalidArgument, "QUERY_FAILED", "query failed (database error %d); check the column names and expressions", me.Number)
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return core.NewError(core.StatusInvalidArgument, "QUERY_FAILED", "query failed: it exceeded the time limit")
+	}
+	return internalErr(err)
 }
 
 // Query runs a guarded read-only SELECT over the public views, restricted to the project.
@@ -82,9 +202,19 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 		offset = n
 	}
 
+	account, _ := ctx.Value(queryAcctKey{}).(string)
+	release, err := s.acquireQuery(account)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
-	conn, err := s.queryDB().Conn(ctx)
+	qdb, err := s.queryDB()
+	if err != nil {
+		return nil, internalErr(err)
+	}
+	conn, err := qdb.Conn(ctx)
 	if err != nil {
 		return nil, internalErr(err)
 	}
@@ -101,7 +231,7 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, rewritten)
 	if err != nil {
-		return nil, core.NewError(core.StatusInvalidArgument, "QUERY_FAILED", "query failed: %v", err)
+		return nil, queryFailed(err)
 	}
 	defer rows.Close()
 	cts, err := rows.ColumnTypes()
@@ -152,7 +282,7 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 		n++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, core.NewError(core.StatusInvalidArgument, "QUERY_FAILED", "query failed: %v", err)
+		return nil, queryFailed(err)
 	}
 	resp.Rows = &out
 	if more {

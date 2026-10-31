@@ -130,6 +130,9 @@ func (a *App) fetchTo(target, dst string) (int64, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
+	if r.tokenErr != nil {
+		return 0, "", r.tokenErr
+	}
 	u, err := url.Parse(target)
 	if err != nil {
 		return 0, "", runtimef("bad download_url: %v", err)
