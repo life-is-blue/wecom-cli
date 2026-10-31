@@ -57,7 +57,7 @@ printf '%s' "$OPENETL_TOKEN" | openetl auth login --token-stdin --base-url "$OPE
 ## 写操作规则
 
 1. **先 `--dry-run`**：所有写命令都支持 `--dry-run`（只校验、不写入）。先预演，确认返回结果符合预期，再去掉 `--dry-run` 真正执行。
-2. **并发控制 `--etag`**：先 `openetl workflow get <WF>` 读到 `etag`，写入时带 `--etag <值>`。遇到 `ABORTED` / `ETAG_MISMATCH`，说明对象已被他人修改：重新读取、重新判断，不要盲目重试。
+2. **并发控制 `--etag`**：先 `openetl workflow get <WF>` 读到 `etag`，写入时带 `--etag <值>`。`etag` 是每个对象各自的：评论、任务返回的 `etag` 不是工作流的，**每次对工作流写之前都重新 `workflow get`**，不要复用别的命令返回的 `etag`。遇到 `ABORTED` / `ETAG_MISMATCH`，说明对象已被他人修改：重新读取、重新判断，不要盲目重试。
 3. **幂等 `--request-id`**：默认自动生成 UUID。需要安全重试（超时、网络错误）时，自己生成一个 UUID 并在重试时传同一个值，重复提交只会返回第一次的结果。
 4. **没有 `--dry-run` 的写入**：`member`、`token`、`config`、`import stage` 的 `--dry-run` 只在本地展示将发送的请求，不经服务端校验；`import apply` / `rollback` 的 `--dry-run` 才是服务端校验。
 5. **原因与备注**：回退、范围调整等需要 `--reason`（取自项目配置的 reason_key）；`--note` 写人能读懂的说明。

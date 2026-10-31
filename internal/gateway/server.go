@@ -265,6 +265,16 @@ func (s *Server) route(q *request) error {
 	case "importJobs":
 		return s.routeImportJobs(q)
 	case "members", "config":
+		// Stages, reasons and rules are not secret and every member needs them (e.g. to find a valid reason
+		// key); settings can reference secrets, so non-admins get everything except settings.
+		if q.segs[2] == "config" && len(q.segs) == 3 && q.r.Method == http.MethodGet && member.Role != core.RoleAdmin {
+			c, err := s.Store.GetConfig(q.r.Context(), q.pr.project())
+			if err != nil {
+				return err
+			}
+			c.Settings = nil
+			return s.respond(q, c)
+		}
 		if member.Role != core.RoleAdmin {
 			return core.NewError(core.StatusPermissionDenied, "ROLE_INSUFFICIENT", "this call requires the admin role")
 		}

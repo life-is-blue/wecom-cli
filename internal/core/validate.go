@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -43,7 +44,15 @@ func Validate(in Input) error {
 	if in.ReasonKey != "" {
 		r, ok := in.Cfg.Reasons[in.ReasonKey]
 		if !ok || !r.Active {
-			return NewError(StatusInvalidArgument, "UNKNOWN_REASON", "reason %q is not defined or not active", in.ReasonKey)
+			var keys []string
+			for k, rr := range in.Cfg.Reasons {
+				if rr.Active {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+			return NewError(StatusInvalidArgument, "UNKNOWN_REASON", "reason %q is not defined or not active; valid reasons: %s", in.ReasonKey, strings.Join(keys, ", ")).
+				With("valid_reasons", strings.Join(keys, ","))
 		}
 		reason = &r
 		if r.NoteRequired && strings.TrimSpace(in.Note) == "" {

@@ -27,6 +27,14 @@ openetl query "SELECT code, name, current_stage, health, open_issues, open_risks
 openetl query "SELECT stage, health, workflows FROM stage_distribution"
 ```
 
+「未完成」指 `scope = 'in' AND current_stage IS NOT NULL`（范围内且还有没通过的阶段）。要找「活最多」的工作流，按任务数排序（没有任务的工作流也会出现，任务数为 0）：
+
+```bash
+openetl query "SELECT w.code, w.name, w.current_stage, COUNT(t.id) AS task_count FROM workflows w LEFT JOIN tasks t ON t.primary_workflow_id = w.id WHERE w.scope = 'in' AND w.current_stage IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(w.assignees, '$.dev_owner')) = 'alice' GROUP BY w.code, w.name, w.current_stage ORDER BY task_count DESC" --page-count 5
+```
+
+查询不支持子查询和 EXISTS，需要时用 JOIN 加 GROUP BY。健康度在视图里是小写 `ok|at_risk|blocked`，在 `workflow get` 的 JSON 里是 `NORMAL|AT_RISK|BLOCKED`，含义相同。
+
 逐个查看详情并取得 `etag`：
 
 ```bash
@@ -52,7 +60,7 @@ openetl stage advance WF-000123 --stage development --note "代码已合并" --e
 ```bash
 openetl comment add WF-000123 --kind issue --body "目标库权限未开通，等待客户开通" --dry-run
 openetl comment add WF-000123 --kind issue --body "目标库权限未开通，等待客户开通" --attach ./screenshot.png
-openetl comment resolve WF-000123 <评论编号> --note "权限已开通"
+openetl comment resolve WF-000123 <评论编号> --note "权限已开通"   # <评论编号> 取自 comment add / comment list 返回的 name 最后一段，形如 cm-000130
 openetl comment reopen WF-000123 <评论编号>
 ```
 
@@ -67,7 +75,7 @@ openetl stage regress WF-000123 --stage accept --stage verify --reason rej_row_c
 openetl stage regress WF-000123 --stage accept --stage verify --reason rej_row_count --note "行数差 1.2%" --etag <etag>
 ```
 
-只有当前为 PASSED 的阶段才能回退（否则 `NOT_REGRESSIBLE`）。reason 不确定时，向用户确认，不要猜。
+只有当前为 PASSED 的阶段才能回退（否则 `NOT_REGRESSIBLE`）。reason 不确定时，先查有效的原因键，再向用户确认，不要猜：`openetl config get` 任何成员可读，看 `reasons` 里 `kind` 为 `REJECT` 的键（回退用）、`DISCARD`（移出范围用）、`NOT_APPLICABLE`（阶段不适用用）。键写错时报错 `UNKNOWN_REASON` 会直接列出可用的键。回退成功后，该阶段在 `events` 视图里表现为 `k = 'stage.verify'` 的新值 `open`，`reason_key` 列不一定有值，需要原因时看事件的备注。
 
 ## 流程 5：调整范围
 
@@ -84,7 +92,7 @@ openetl scope set WF-000200 --to in --note "恢复迁移"
 2. 今日进展（`events` 视图一行一个键变更，`k` 形如 `stage.development`，时间用 `event_time`）：
 
 ```bash
-openetl query "SELECT e.entity_id, e.k, e.new_v, e.actor, e.event_time FROM events e WHERE e.k LIKE 'stage.%' AND e.event_time >= '2026-10-31 00:00:00' ORDER BY e.event_time" --page-count 5
+openetl query "SELECT w.code, e.k, e.new_v, e.actor, e.event_time FROM events e JOIN workflows w ON w.id = e.entity_id WHERE e.k LIKE 'stage.%' AND e.event_time >= '2026-10-31 00:00:00' ORDER BY e.event_time" --page-count 5
 ```
 
 3. 阻塞项：

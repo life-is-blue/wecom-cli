@@ -176,7 +176,12 @@ func TestAdminMembersAndTokens(t *testing.T) {
 	// only admins
 	for _, tok := range []string{f.editor, f.viewer, f.cust} {
 		f.wantErr(f.do(tok, "GET", base+"/members", nil), 403, "PERMISSION_DENIED", "ROLE_INSUFFICIENT")
-		f.wantErr(f.do(tok, "GET", base+"/config", nil), 403, "PERMISSION_DENIED", "ROLE_INSUFFICIENT")
+		// every member may read stages/reasons/rules (an editor must be able to find a valid reason key), never settings
+		cfg := f.wantOK(f.do(tok, "GET", base+"/config", nil))
+		if cfg.body["settings"] != nil || len(cfg.body["reasons"].([]any)) == 0 {
+			t.Fatalf("non-admin config read must hide settings and include reasons: %v", cfg.body)
+		}
+		f.wantErr(f.do(tok, "PATCH", base+"/config?update_mask=settings", map[string]any{"settings": map[string]any{"a": "b"}}), 403, "PERMISSION_DENIED", "ROLE_INSUFFICIENT")
 		f.wantErr(f.do(tok, "POST", "/v1/accounts/"+acct("ed")+"/tokens", map[string]any{}), 403, "PERMISSION_DENIED", "ROLE_INSUFFICIENT")
 	}
 
