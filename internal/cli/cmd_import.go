@@ -18,7 +18,11 @@ import (
 )
 
 // importClasses is the review order of diff classes: what needs a human first.
-var importClasses = []string{"CONFLICT", "SUSPECT", "CHANGED", "NEW", "MISSING", "UNCHANGED"}
+// Task classes (TASK_*) mirror the workflow ones; TASK_SUSPECT does not exist.
+var importClasses = []string{"CONFLICT", "SUSPECT", "CHANGED", "NEW", "MISSING", "TASK_CONFLICT", "TASK_CHANGED", "TASK_NEW", "TASK_MISSING", "UNCHANGED", "TASK_UNCHANGED"}
+
+// quietClasses are listed in a diff only on request.
+var quietClasses = []string{"UNCHANGED", "TASK_UNCHANGED"}
 
 func (a *App) importCmd() *cobra.Command {
 	return group("import", "Stage legacy rows, review the diff, then apply or roll back (batch import)",
@@ -150,19 +154,26 @@ func (a *App) importShow() *cobra.Command {
 			}
 			if j.Summary != nil {
 				out["total"] = sumCounts(*j.Summary)
-				out["needs_review"] = (*j.Summary)["CONFLICT"]+(*j.Summary)["SUSPECT"] > 0
+				out["needs_review"] = needsReview(*j.Summary)
 			}
 			return a.emitValue(out)
 		},
 	}
 }
 
+// sumCounts is the number of workflow rows (summary keys of tasks start with TASK_).
 func sumCounts(m map[string]int) int {
 	n := 0
-	for _, v := range m {
-		n += v
+	for k, v := range m {
+		if !strings.HasPrefix(k, "TASK_") {
+			n += v
+		}
 	}
 	return n
+}
+
+func needsReview(m map[string]int) bool {
+	return m["CONFLICT"]+m["SUSPECT"]+m["TASK_CONFLICT"] > 0
 }
 
 type diffClass struct {
@@ -179,6 +190,7 @@ func (a *App) importDiff() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "diff JOB [--limit N] [--action CLASS]... [--raw]", Short: "Compare staged rows with current data: counts per class and the first N rows per class",
 		Long: "Classes: CONFLICT and SUSPECT need a human decision; CHANGED and NEW are merged on apply; MISSING and UNCHANGED are informational.\n" +
+			"TASK_* classes are the same for tasks (a TASK_CONFLICT is merged with its workflow's merge resolution).\n" +
 			"By default rows of every class except UNCHANGED are listed (first --limit each). --raw prints the server's diff pages instead (--filter, --page-size, --page-count).",
 		Args: exactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -192,7 +204,12 @@ func (a *App) importDiff() *cobra.Command {
 			if limit <= 0 {
 				return usagef("--limit must be positive")
 			}
-			classes := importClasses[:len(importClasses)-1]
+			var classes []string
+			for _, c := range importClasses {
+				if !contains(quietClasses, c) {
+					classes = append(classes, c)
+				}
+			}
 			if len(actions) > 0 {
 				classes = nil
 				for _, x := range actions {
@@ -212,7 +229,7 @@ func (a *App) importDiff() *cobra.Command {
 				counts = *job.Summary
 			}
 			out := map[string]any{"counts": counts, "total": sumCounts(counts), "limit": limit,
-				"needs_review": counts["CONFLICT"]+counts["SUSPECT"] > 0}
+				"needs_review": needsReview(counts)}
 			if job.Name != nil {
 				out["job"] = *job.Name
 			}

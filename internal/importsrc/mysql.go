@@ -59,36 +59,37 @@ func openMySQL(from string, m *Mapping, getenv func(string) string) (Source, err
 			cfg.TLSConfig = v[0]
 		}
 	}
-	q, err := m.sourceQuery()
+	q, err := selectQuery("source", m.Source.Table, m.Source.Query, m.Source.OrderBy)
 	if err != nil {
 		return nil, err
 	}
 	return &mysqlSource{cfg: cfg, password: pw, query: q, label: "mysql://" + u.User.Username() + "@" + host + "/" + db}, nil
 }
 
-func (m *Mapping) sourceQuery() (string, error) {
+// selectQuery builds the single SELECT of a table or query spec; what names it in errors ("source", "tasks").
+func selectQuery(what, table, query, orderBy string) (string, error) {
 	switch {
-	case m.Source.Query != "":
-		q := strings.TrimSpace(m.Source.Query)
+	case query != "":
+		q := strings.TrimSpace(query)
 		low := strings.ToLower(q)
 		if !(strings.HasPrefix(low, "select") || strings.HasPrefix(low, "with")) || strings.Contains(strings.TrimRight(q, "; \n"), ";") {
-			return "", errors.New("mapping: source.query must be a single SELECT statement")
+			return "", fmt.Errorf("mapping: %s.query must be a single SELECT statement", what)
 		}
 		return q, nil
-	case m.Source.Table != "":
-		if !identRe.MatchString(m.Source.Table) {
-			return "", fmt.Errorf("mapping: invalid source.table %q", m.Source.Table)
+	case table != "":
+		if !identRe.MatchString(table) {
+			return "", fmt.Errorf("mapping: invalid %s.table %q", what, table)
 		}
-		q := "SELECT * FROM " + quoteIdent(m.Source.Table)
-		if m.Source.OrderBy != "" {
-			if !identRe.MatchString(m.Source.OrderBy) {
-				return "", fmt.Errorf("mapping: invalid source.order_by %q", m.Source.OrderBy)
+		q := "SELECT * FROM " + quoteIdent(table)
+		if orderBy != "" {
+			if !identRe.MatchString(orderBy) {
+				return "", fmt.Errorf("mapping: invalid %s.order_by %q", what, orderBy)
 			}
-			q += " ORDER BY " + quoteIdent(m.Source.OrderBy)
+			q += " ORDER BY " + quoteIdent(orderBy)
 		}
 		return q, nil
 	}
-	return "", errors.New("mapping: source.table or source.query is required for a mysql:// source")
+	return "", fmt.Errorf("mapping: %s.table or %s.query is required for a mysql:// source", what, what)
 }
 
 func quoteIdent(s string) string {
@@ -107,6 +108,19 @@ func (s *mysqlSource) scrub(err error) error {
 }
 
 func (s *mysqlSource) Scan(ctx context.Context, fn func(Row) error) error {
+	return s.scanQuery(ctx, s.query, fn)
+}
+
+// ScanTasks runs the mapping's tasks.table / tasks.query on the same server (read-only).
+func (s *mysqlSource) ScanTasks(ctx context.Context, t *TasksSpec, fn func(Row) error) error {
+	q, err := selectQuery("tasks", t.Table, t.Query, "")
+	if err != nil {
+		return err
+	}
+	return s.scanQuery(ctx, q, fn)
+}
+
+func (s *mysqlSource) scanQuery(ctx context.Context, query string, fn func(Row) error) error {
 	conn, err := mysql.NewConnector(s.cfg)
 	if err != nil {
 		return s.scrub(err)
@@ -120,7 +134,7 @@ func (s *mysqlSource) Scan(ctx context.Context, fn func(Row) error) error {
 		return fmt.Errorf("connect %s: %w", s.label, s.scrub(err))
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, s.query)
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("query %s: %w", s.label, s.scrub(err))
 	}

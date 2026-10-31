@@ -100,7 +100,7 @@ func (e *env) ent(t *testing.T, id int64) *Entity {
 // byRef finds the live workflow id imported with the given reference.
 func (e *env) byRef(t *testing.T, system, ref string) int64 {
 	t.Helper()
-	ex, err := loadImportExisting(e.ctx, e.st.DB, e.p.ID)
+	ex, err := loadImportExisting(e.ctx, e.st.DB, e.p.ID, "workflow")
 	if err != nil {
 		t.Fatal(err)
 	}

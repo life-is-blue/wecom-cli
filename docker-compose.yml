@@ -1,0 +1,37 @@
+# MySQL + gateway. One-shot services run in order: migrate -> grants (restricted query user) -> gateway.
+x-env: &env
+  OPENETL_DB_DSN: openetl:openetl-pw@tcp(db:3306)/openetl?parseTime=true&multiStatements=true
+services:
+  db:
+    image: mysql:8.0
+    environment: {MYSQL_ROOT_PASSWORD: root-pw, MYSQL_DATABASE: openetl, MYSQL_USER: openetl, MYSQL_PASSWORD: openetl-pw}
+    ports: ["33308:3306"]
+    volumes: ["dbdata:/var/lib/mysql"]
+    healthcheck: {test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot-pw"], interval: 2s, timeout: 3s, retries: 60}
+  migrate:
+    image: openetl-gateway:e2e
+    command: ["migrate"]
+    environment: *env
+    depends_on: {db: {condition: service_healthy}}
+    restart: "no"
+  grants:
+    image: mysql:8.0
+    entrypoint: ["sh", "-c", "sed \"s/CHANGE-ME-long-random-password/query-pw/\" /grants.sql | mysql -h db -uroot -proot-pw"]
+    volumes: ["./scripts/create-query-user.sql:/grants.sql:ro"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    restart: "no"
+  gateway:
+    build: .
+    image: openetl-gateway:e2e
+    environment:
+      <<: *env
+      OPENETL_QUERY_DSN: openetl_query:query-pw@tcp(db:3306)/openetl
+      OPENETL_STORAGE: fs
+      OPENETL_STORAGE_DIR: /data/blobs
+      OPENETL_STORAGE_SECRET: e2e-only-secret
+      OPENETL_PUBLIC_URL: http://127.0.0.1:18080
+    ports: ["18080:8080"]
+    volumes: ["blobs:/data"]
+    depends_on: {grants: {condition: service_completed_successfully}}
+    healthcheck: {test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"], interval: 2s, timeout: 3s, retries: 30}
+volumes: {dbdata: {}, blobs: {}}

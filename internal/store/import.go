@@ -37,6 +37,7 @@ type StageInput struct {
 
 // DiffRow is one line of the diff. RowNo 0 marks a "missing" line (no staged row).
 type DiffRow struct {
+	Task    bool // a task line: Action is the task class, RowNo the row of its workflow (0 for task_missing)
 	RowNo   int
 	System  string
 	Ref     string
@@ -125,14 +126,14 @@ func getBatch(ctx context.Context, q execer, projectID, id int64, forUpdate bool
 
 // ---------------------------------------------------------------- loading current data
 
-// loadImportExisting folds every workflow of the project (soft-deleted ones included) from the
-// delta history in one pass.
-func loadImportExisting(ctx context.Context, q execer, projectID int64) ([]*core.ImportExisting, error) {
+// loadImportExisting folds every entity of the given type ("workflow" or "task") of the project
+// (soft-deleted ones included) from the delta history in one pass.
+func loadImportExisting(ctx context.Context, q execer, projectID int64, typ string) ([]*core.ImportExisting, error) {
 	rows, err := q.QueryContext(ctx, `SELECT d.entity_id, d.k, d.new_v, ev.channel
 		FROM delta d JOIN entity e ON e.id = d.entity_id
 		JOIN event ev ON ev.id = d.event_id
-		WHERE e.project_id = ? AND e.type = 'workflow'
-		ORDER BY d.event_id`, projectID)
+		WHERE e.project_id = ? AND e.type = ?
+		ORDER BY d.event_id`, projectID, typ)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +173,9 @@ func loadImportExisting(ctx context.Context, q execer, projectID int64) ([]*core
 	return out, nil
 }
 
-// loadImportBase returns, per source reference, the normalized keys of the last applied import row.
+func taskBaseKey(system, ref string) string { return "task\x00" + system + "\x00" + ref }
+
+// loadImportBase returns, per source reference (tasks: taskBaseKey), the normalized keys of the last applied import row.
 func loadImportBase(ctx context.Context, q execer, projectID, exceptBatch int64, refs []string) (map[string]map[string]json.RawMessage, error) {
 	out := map[string]map[string]json.RawMessage{}
 	for i := 0; i < len(refs); i += 500 {
@@ -196,6 +199,9 @@ func loadImportBase(ctx context.Context, q execer, projectID, exceptBatch int64,
 			var sr storedRow
 			if json.Unmarshal([]byte(js), &sr) == nil && sr.Row != nil {
 				out[sr.Row.System+"\x00"+sr.Row.Ref] = sr.Row.Keys
+				for _, t := range sr.Row.Tasks {
+					out[taskBaseKey(sr.Row.System, t.Ref)] = t.Keys
+				}
 			}
 		}
 		rows.Close()
@@ -206,34 +212,58 @@ func loadImportBase(ctx context.Context, q execer, projectID, exceptBatch int64,
 // ---------------------------------------------------------------- planning
 
 type planRow struct {
-	Row *core.ImportRow
-	Dec core.Decision
+	Row   *core.ImportRow
+	Dec   core.Decision
+	Tasks []core.Decision // one per Row.Tasks
 }
 
 type importPlan struct {
-	Rows    []planRow // valid rows in row order
-	Invalid []RowError
-	Missing []*core.ImportExisting
-	Counts  map[string]int
+	Rows         []planRow // valid rows in row order
+	Invalid      []RowError
+	Missing      []*core.ImportExisting
+	MissingTasks []*core.ImportExisting
+	Counts       map[string]int // task classes are keyed task_<action>
 }
 
 func countsOf(pl *importPlan) map[string]int {
 	c := map[string]int{}
 	for _, r := range pl.Rows {
 		c[r.Dec.Action]++
+		for _, t := range r.Tasks {
+			c["task_"+t.Action]++
+		}
 	}
 	c[core.ActionMissing] = len(pl.Missing)
+	if len(pl.MissingTasks) > 0 {
+		c["task_missing"] = len(pl.MissingTasks)
+	}
 	c["invalid"] = len(pl.Invalid)
 	return c
 }
 
+// primaryParent is the workflow a task is primarily linked to (0 when none).
+func primaryParent(e *core.ImportExisting) int64 {
+	for k, v := range e.Vals {
+		if id, ok := strings.CutPrefix(k, "in."); ok && core.Scalar(v) == "primary" {
+			n, _ := strconv.ParseInt(id, 10, 64)
+			return n
+		}
+	}
+	return 0
+}
+
 // buildPlan classifies parsed rows against the current data of the project.
 func buildPlan(ctx context.Context, q execer, projectID, batchID int64, source string, rows []*core.ImportRow, invalid []RowError) (*importPlan, error) {
-	existing, err := loadImportExisting(ctx, q, projectID)
+	existing, err := loadImportExisting(ctx, q, projectID, "workflow")
 	if err != nil {
 		return nil, err
 	}
 	m := core.NewImportMatcher(existing)
+	existingTasks, err := loadImportExisting(ctx, q, projectID, "task")
+	if err != nil {
+		return nil, err
+	}
+	tm := core.NewImportMatcher(existingTasks)
 	var refs []string
 	for _, r := range rows {
 		if r.Ref != "" {
@@ -245,15 +275,29 @@ func buildPlan(ctx context.Context, q execer, projectID, batchID int64, source s
 		return nil, err
 	}
 	pl := &importPlan{Invalid: invalid}
-	matched := map[int64]bool{}
+	matched, matchedTasks := map[int64]bool{}, map[int64]bool{}
 	for _, r := range rows {
 		dec := core.Classify(*r, m, base[r.System+"\x00"+r.Ref])
 		if dec.Match != 0 {
 			matched[dec.Match] = true
 		}
-		pl.Rows = append(pl.Rows, planRow{Row: r, Dec: dec})
+		pr := planRow{Row: r, Dec: dec}
+		for _, t := range r.Tasks {
+			td := core.Classify(t.Row(r.System), tm, base[taskBaseKey(r.System, t.Ref)])
+			if td.Match != 0 {
+				matchedTasks[td.Match] = true
+			}
+			pr.Tasks = append(pr.Tasks, td)
+		}
+		pl.Rows = append(pl.Rows, pr)
 	}
 	pl.Missing = m.Missing(source, matched)
+	// a task is missing when its workflow is in this batch but the batch no longer lists the task
+	for _, e := range tm.Missing(source, matchedTasks) {
+		if matched[primaryParent(e)] {
+			pl.MissingTasks = append(pl.MissingTasks, e)
+		}
+	}
 	pl.Counts = countsOf(pl)
 	return pl, nil
 }
@@ -297,6 +341,25 @@ func planBatch(ctx context.Context, q execer, projectID int64, b *batchRow) (*im
 
 // ---------------------------------------------------------------- stage
 
+// checkTaskRefs rejects a row whose task (system, reference) already appeared; otherwise it registers them.
+func checkTaskRefs(no int, r *core.ImportRow, seen map[string]int) *RowError {
+	mine := map[string]bool{}
+	for _, t := range r.Tasks {
+		k := r.System + "\x00" + t.Ref
+		if first, dup := seen[k]; dup {
+			return rowErr(no, "DUPLICATE_SOURCE_REFERENCE", "task source %s/%s already appears in row %d", r.System, t.Ref, first)
+		}
+		if mine[k] {
+			return rowErr(no, "DUPLICATE_SOURCE_REFERENCE", "task source %s/%s appears twice in this row", r.System, t.Ref)
+		}
+		mine[k] = true
+	}
+	for k := range mine {
+		seen[k] = no
+	}
+	return nil
+}
+
 // StageImport validates the rows, classifies them and stores the batch. Nothing in the workflow
 // data changes. Rows that fail validation are reported individually and kept out of the diff.
 func (s *Store) StageImport(ctx context.Context, p Project, actor core.Actor, in StageInput) (*ImportJobResult, error) {
@@ -324,7 +387,7 @@ func (s *Store) StageImport(ctx context.Context, p Project, actor core.Actor, in
 	var valid []*core.ImportRow
 	var invalid []RowError
 	rawOf := map[int]json.RawMessage{}
-	seenRef, seenCode := map[string]int{}, map[int64]int{}
+	seenRef, seenCode, seenTask := map[string]int{}, map[int64]int{}, map[string]int{}
 	for i, raw := range in.Rows {
 		no := i + 1
 		rawOf[no] = raw
@@ -343,6 +406,9 @@ func (s *Store) StageImport(ctx context.Context, p Project, actor core.Actor, in
 			} else {
 				seenCode[r.Code] = no
 			}
+		}
+		if re == nil {
+			re = checkTaskRefs(no, r, seenTask)
 		}
 		if re != nil {
 			invalid = append(invalid, *re)
@@ -474,6 +540,17 @@ func (s *Store) DiffImport(ctx context.Context, p Project, id int64, actions map
 		for _, r := range pl.Rows {
 			all = append(all, DiffRow{RowNo: r.Row.No, System: r.Row.System, Ref: r.Row.Ref, Hash: r.Row.Hash,
 				Action: r.Dec.Action, Match: r.Dec.Match, Changes: r.Dec.Changes})
+			for i, t := range r.Row.Tasks {
+				td := r.Tasks[i]
+				all = append(all, DiffRow{Task: true, RowNo: r.Row.No, System: r.Row.System, Ref: t.Ref, Hash: t.Hash,
+					Action: "task_" + td.Action, Match: td.Match, Changes: td.Changes})
+			}
+		}
+		for _, e := range pl.MissingTasks {
+			sys, _ := core.Str(e.Vals["source.system"])
+			ref, _ := core.Str(e.Vals["source.ref"])
+			hash, _ := core.Str(e.Vals["source.hash"])
+			all = append(all, DiffRow{Task: true, System: sys, Ref: ref, Hash: hash, Action: "task_missing", Match: e.ID})
 		}
 		for _, e := range pl.Missing {
 			sys, _ := core.Str(e.Vals["source.system"])
@@ -528,19 +605,25 @@ type kv struct {
 	New json.RawMessage
 }
 
-// bulkEvent is one event to insert; EntityID 0 creates a workflow entity first.
+// bulkEvent is one event to insert; EntityID 0 creates an entity of Type first.
 type bulkEvent struct {
 	EntityID int64
-	IdemKey  string
+	Type     string // type of a created entity; default workflow
+	IdemKey  string // required and unique: event ids are read back by it
 	Note     string
 	Corrects int64
 	Deltas   []kv
+	// Primary-links a created or matched task to its workflow: the delta in.<id> = primary is added at
+	// write time, once the id of a workflow created in this batch is known.
+	ParentEv *bulkEvent
+	ParentID int64
 	// out
 	CreatedEntity int64
 }
 
-// bulkWriter inserts many events inside a caller-owned transaction with prepared statements and
-// multi-row delta inserts.
+// bulkWriter inserts many events inside a caller-owned transaction. Events are queued and written
+// in batches of multi-row statements (entities, then events, then deltas and the entity_latest cache);
+// flush writes the queue.
 type bulkWriter struct {
 	ctx     context.Context
 	tx      *sql.Tx
@@ -548,36 +631,20 @@ type bulkWriter struct {
 	actor   core.Actor
 	reason  sql.NullString
 	now     time.Time
-
-	entStmt, evStmt *sql.Stmt
-	pending         []any
-	pendingRows     int
+	queue   []*bulkEvent
 }
+
+const bulkBatch = 500
 
 func newBulkWriter(ctx context.Context, tx *sql.Tx, project int64, actor core.Actor, reason string, now time.Time) (*bulkWriter, error) {
 	w := &bulkWriter{ctx: ctx, tx: tx, project: project, actor: actor, now: now}
 	if reason != "" {
 		w.reason = sql.NullString{String: reason, Valid: true}
 	}
-	var err error
-	if w.entStmt, err = tx.PrepareContext(ctx, `INSERT INTO entity(project_id, type, create_time) VALUES(?, 'workflow', ?)`); err != nil {
-		return nil, err
-	}
-	if w.evStmt, err = tx.PrepareContext(ctx, `INSERT INTO event(project_id, entity_id, actor, side, channel, reason_key, note, idempotency_key,
-		corrects_event_id, event_time, create_time) VALUES(?,?,?,?,?,?,?,?,?,?,?)`); err != nil {
-		return nil, err
-	}
 	return w, nil
 }
 
-func (w *bulkWriter) close() {
-	if w.entStmt != nil {
-		w.entStmt.Close()
-	}
-	if w.evStmt != nil {
-		w.evStmt.Close()
-	}
-}
+func (w *bulkWriter) close() {}
 
 func nullJSON(raw json.RawMessage) sql.NullString {
 	t := normJSON(raw)
@@ -587,58 +654,123 @@ func nullJSON(raw json.RawMessage) sql.NullString {
 	return sql.NullString{String: string(t), Valid: true}
 }
 
-func (w *bulkWriter) write(ev *bulkEvent) (eventID int64, err error) {
-	entityID := ev.EntityID
-	if entityID == 0 {
-		r, err := w.entStmt.ExecContext(w.ctx, w.project, w.now)
-		if err != nil {
-			return 0, err
-		}
-		entityID, _ = r.LastInsertId()
-		ev.CreatedEntity = entityID
+// write queues an event; it is stored by the next flush (automatic every bulkBatch events).
+func (w *bulkWriter) write(ev *bulkEvent) error {
+	w.queue = append(w.queue, ev)
+	if len(w.queue) >= bulkBatch {
+		return w.flush()
 	}
-	var note sql.NullString
-	if ev.Note != "" {
-		note = sql.NullString{String: ev.Note, Valid: true}
-	}
-	var corrects sql.NullInt64
-	if ev.Corrects != 0 {
-		corrects = sql.NullInt64{Int64: ev.Corrects, Valid: true}
-	}
-	r, err := w.evStmt.ExecContext(w.ctx, w.project, entityID, w.actor.Account, w.actor.Side, w.actor.Channel, w.reason, note,
-		sql.NullString{String: ev.IdemKey, Valid: ev.IdemKey != ""}, corrects, w.now, w.now)
-	if err != nil {
-		return 0, err
-	}
-	eventID, _ = r.LastInsertId()
-	for _, d := range ev.Deltas {
-		w.pending = append(w.pending, eventID, entityID, d.Key, nullJSON(d.Old), nullJSON(d.New))
-		w.pendingRows++
-		if w.pendingRows >= 400 {
-			if err := w.flush(); err != nil {
-				return 0, err
-			}
-		}
-	}
-	return eventID, nil
+	return nil
+}
+
+func rowsPlaceholder(n int, group string) string {
+	return strings.TrimSuffix(strings.Repeat(group+",", n), ",")
 }
 
 func (w *bulkWriter) flush() error {
-	if w.pendingRows == 0 {
+	q := w.queue
+	w.queue = nil
+	if len(q) == 0 {
 		return nil
 	}
-	q := `INSERT INTO delta(event_id, entity_id, k, old_v, new_v) VALUES ` + strings.TrimSuffix(strings.Repeat("(?,?,?,?,?),", w.pendingRows), ",")
-	_, err := w.tx.ExecContext(w.ctx, q, w.pending...)
-	if err == nil { // keep the entity_latest cache in step (args per row: event, entity, key, old, new)
-		latest := make([]latestRow, 0, w.pendingRows)
-		for i := 0; i < len(w.pending); i += 5 {
-			latest = append(latest, latestRow{EventID: w.pending[i].(int64), EntityID: w.pending[i+1].(int64),
-				Key: w.pending[i+2].(string), New: w.pending[i+4].(sql.NullString)})
+	// 1. entities (consecutive auto-increment ids are verified, not assumed)
+	var fresh []*bulkEvent
+	for _, ev := range q {
+		if ev.EntityID == 0 {
+			fresh = append(fresh, ev)
 		}
-		err = upsertLatest(w.ctx, w.tx, latest)
 	}
-	w.pending, w.pendingRows = w.pending[:0], 0
-	return err
+	if len(fresh) > 0 {
+		args := make([]any, 0, len(fresh)*3)
+		for _, ev := range fresh {
+			typ := ev.Type
+			if typ == "" {
+				typ = "workflow"
+			}
+			args = append(args, w.project, typ, w.now)
+		}
+		r, err := w.tx.ExecContext(w.ctx, `INSERT INTO entity(project_id, type, create_time) VALUES `+rowsPlaceholder(len(fresh), "(?,?,?)"), args...)
+		if err != nil {
+			return err
+		}
+		first, _ := r.LastInsertId()
+		last := first + int64(len(fresh)) - 1
+		var n int64
+		if err := w.tx.QueryRowContext(w.ctx, `SELECT COUNT(*) FROM entity WHERE id BETWEEN ? AND ? AND project_id = ?`, first, last, w.project).Scan(&n); err != nil {
+			return err
+		}
+		if n != int64(len(fresh)) {
+			return fmt.Errorf("entity ids are not consecutive (%d of %d rows in %d..%d)", n, len(fresh), first, last)
+		}
+		for i, ev := range fresh {
+			ev.EntityID = first + int64(i)
+			ev.CreatedEntity = ev.EntityID
+		}
+	}
+	// 2. events, read back by idempotency key
+	args := make([]any, 0, len(q)*11)
+	keys := make([]any, 0, len(q))
+	for _, ev := range q {
+		var note sql.NullString
+		if ev.Note != "" {
+			note = sql.NullString{String: ev.Note, Valid: true}
+		}
+		var corrects sql.NullInt64
+		if ev.Corrects != 0 {
+			corrects = sql.NullInt64{Int64: ev.Corrects, Valid: true}
+		}
+		args = append(args, w.project, ev.EntityID, w.actor.Account, w.actor.Side, w.actor.Channel, w.reason, note, ev.IdemKey, corrects, w.now, w.now)
+		keys = append(keys, ev.IdemKey)
+	}
+	if _, err := w.tx.ExecContext(w.ctx, `INSERT INTO event(project_id, entity_id, actor, side, channel, reason_key, note, idempotency_key,
+		corrects_event_id, event_time, create_time) VALUES `+rowsPlaceholder(len(q), "(?,?,?,?,?,?,?,?,?,?,?)"), args...); err != nil {
+		return err
+	}
+	ids := make(map[string]int64, len(q))
+	rs, err := w.tx.QueryContext(w.ctx, `SELECT idempotency_key, id FROM event WHERE project_id = ? AND idempotency_key IN (`+placeholders(len(keys))+`)`, append([]any{w.project}, keys...)...)
+	if err != nil {
+		return err
+	}
+	for rs.Next() {
+		var k string
+		var id int64
+		if err := rs.Scan(&k, &id); err != nil {
+			rs.Close()
+			return err
+		}
+		ids[k] = id
+	}
+	rs.Close()
+	// 3. deltas and the cache
+	var dargs []any
+	var latest []latestRow
+	nd := 0
+	for _, ev := range q {
+		id, ok := ids[ev.IdemKey]
+		if !ok {
+			return fmt.Errorf("event %s was not stored", ev.IdemKey)
+		}
+		ds := ev.Deltas
+		if pid := ev.ParentID; ev.ParentEv != nil || pid != 0 {
+			if ev.ParentEv != nil {
+				pid = ev.ParentEv.CreatedEntity
+			}
+			ds = append(ds[:len(ds):len(ds)], kv{Key: "in." + strconv.FormatInt(pid, 10), New: core.JSON("primary")})
+		}
+		for _, d := range ds {
+			ov, nv := nullJSON(d.Old), nullJSON(d.New)
+			dargs = append(dargs, id, ev.EntityID, d.Key, ov, nv)
+			latest = append(latest, latestRow{EventID: id, EntityID: ev.EntityID, Key: d.Key, New: nv})
+			nd++
+		}
+	}
+	for i := 0; i < nd; i += 800 {
+		end := min(i+800, nd)
+		if _, err := w.tx.ExecContext(w.ctx, `INSERT INTO delta(event_id, entity_id, k, old_v, new_v) VALUES `+rowsPlaceholder(end-i, "(?,?,?,?,?)"), dargs[i*5:end*5]...); err != nil {
+			return err
+		}
+	}
+	return upsertLatest(w.ctx, w.tx, latest)
 }
 
 // ---------------------------------------------------------------- apply
@@ -721,6 +853,7 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 		no     int
 		action string
 		match  int64
+		ev     *bulkEvent // a created workflow: its id is known after the last flush
 	}
 	var effects []effect
 	applied := map[string]int{"created": 0, "updated": 0, "skipped": 0}
@@ -747,6 +880,8 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 				create, eff = true, core.ActionNew
 			}
 		}
+		var parent int64        // the existing workflow the row's tasks hang under
+		var parentEv *bulkEvent // or the one created by this job; both unset when the row itself was skipped
 		switch {
 		case create:
 			keys := row.Desired()
@@ -759,11 +894,12 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 			for _, k := range names {
 				ev.Deltas = append(ev.Deltas, kv{Key: k, New: keys[k]})
 			}
-			if _, err := w.write(ev); err != nil {
+			if err := w.write(ev); err != nil {
 				return nil, internalErr(err)
 			}
 			applied["created"]++
-			effects = append(effects, effect{row.No, eff, ev.CreatedEntity})
+			parentEv = ev
+			effects = append(effects, effect{row.No, eff, 0, ev})
 		case update:
 			var planned []PlannedChange
 			for _, c := range dec.Changes {
@@ -771,10 +907,11 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 					planned = append(planned, PlannedChange{Key: c.Key, New: c.New})
 				}
 			}
+			parent = dec.Match
 			if len(planned) == 0 {
 				applied["skipped"]++
-				effects = append(effects, effect{row.No, dec.Action, dec.Match})
-				continue
+				effects = append(effects, effect{row.No, dec.Action, dec.Match, nil})
+				break
 			}
 			if err := w.flush(); err != nil { // keep write order for the entity lock below
 				return nil, internalErr(err)
@@ -792,12 +929,17 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 			} else {
 				applied["updated"]++
 			}
-			effects = append(effects, effect{row.No, eff, dec.Match})
+			effects = append(effects, effect{row.No, eff, dec.Match, nil})
 		default:
-			if dec.Action != core.ActionUnchanged {
+			if dec.Action == core.ActionUnchanged {
+				parent = dec.Match
+			} else {
 				applied["skipped"]++
 			}
-			effects = append(effects, effect{row.No, dec.Action, dec.Match})
+			effects = append(effects, effect{row.No, dec.Action, dec.Match, nil})
+		}
+		if err := applyTasks(w, b.ID, r, parent, parentEv, res == "merge", opts.Note, applied); err != nil {
+			return nil, internalErr(err)
 		}
 	}
 	if err := w.flush(); err != nil {
@@ -817,6 +959,9 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 	}
 	defer up.Close()
 	for _, e := range effects {
+		if e.ev != nil {
+			e.match = e.ev.CreatedEntity
+		}
 		var m sql.NullInt64
 		if e.match != 0 {
 			m = sql.NullInt64{Int64: e.match, Valid: true}
@@ -832,7 +977,59 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 		return nil, internalErr(err)
 	}
 	b.State, b.AppliedAt, b.Summary = ImportApplied, sql.NullTime{Time: now, Valid: true}, sql.NullString{String: string(sj), Valid: true}
+	s.analyzeAfterBulk(ctx)
 	return b.result(p, pl.Invalid), nil
+}
+
+// applyTasks writes the tasks of one row under its workflow (parent): new tasks are created with a
+// primary in.<parent> link; matched ones get their source-owned changes (a CONFLICT only when the
+// row's workflow conflict was resolved "merge"). Tasks of a skipped row are skipped. Platform-owned
+// keys are never overwritten (the diff does not propose them). Counts go to applied as task_*.
+func applyTasks(w *bulkWriter, batch int64, r *planRow, parent int64, parentEv *bulkEvent, merge bool, user string, applied map[string]int) error {
+	for i, t := range r.Row.Tasks {
+		dec := r.Tasks[i]
+		if dec.Action == core.ActionUnchanged {
+			continue
+		}
+		note := fmt.Sprintf("import job %d row %d task %s:%s", batch, r.Row.No, r.Row.System, t.Ref)
+		if user != "" {
+			note += ": " + user
+		}
+		ev := &bulkEvent{Type: "task", IdemKey: fmt.Sprintf("imp-%d-%d-%d", batch, r.Row.No, i+1), Note: note}
+		switch {
+		case (parent == 0 && parentEv == nil) || (dec.Action == core.ActionConflict && !merge) || dec.Action == core.ActionSuspect:
+			applied["task_skipped"]++
+			continue
+		case dec.Action == core.ActionNew:
+			keys := t.Row(r.Row.System).Desired()
+			ev.ParentEv, ev.ParentID = parentEv, parent
+			names := make([]string, 0, len(keys))
+			for k := range keys {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			for _, k := range names {
+				ev.Deltas = append(ev.Deltas, kv{Key: k, New: keys[k]})
+			}
+			applied["task_created"]++
+		default: // changed, or a conflict being merged
+			ev.EntityID = dec.Match
+			for _, c := range dec.Changes {
+				if c.Kind != core.ChangeConflict {
+					ev.Deltas = append(ev.Deltas, kv{Key: c.Key, Old: c.Old, New: c.New})
+				}
+			}
+			if len(ev.Deltas) == 0 {
+				applied["task_skipped"]++
+				continue
+			}
+			applied["task_updated"]++
+		}
+		if err := w.write(ev); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- rollback
@@ -892,12 +1089,24 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 		lastOwn[e.Entity] = max(lastOwn[e.Entity], e.ID)
 	}
 	var blocked []int64
+	isTask := map[int64]bool{}
 	for i := 0; i < len(entities); i += 1000 {
 		chunk := entities[i:min(i+1000, len(entities))]
 		ph := placeholders(len(chunk))
-		if _, err := tx.ExecContext(ctx, `SELECT id FROM entity WHERE id IN (`+ph+`) ORDER BY id FOR UPDATE`, idArgs(chunk)...); err != nil {
+		lr, err := tx.QueryContext(ctx, `SELECT id, type FROM entity WHERE id IN (`+ph+`) ORDER BY id FOR UPDATE`, idArgs(chunk)...)
+		if err != nil {
 			return nil, internalErr(err)
 		}
+		for lr.Next() {
+			var id int64
+			var typ string
+			if err := lr.Scan(&id, &typ); err != nil {
+				lr.Close()
+				return nil, internalErr(err)
+			}
+			isTask[id] = typ == "task"
+		}
+		lr.Close()
 		er, err := tx.QueryContext(ctx, `SELECT entity_id, id FROM event WHERE entity_id IN (`+ph+`) ORDER BY id`, idArgs(chunk)...)
 		if err != nil {
 			return nil, internalErr(err)
@@ -926,10 +1135,14 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 			if i == 50 {
 				break
 			}
-			names = append(names, p.workflowName(ent))
+			if isTask[ent] {
+				names = append(names, p.taskName(ent))
+			} else {
+				names = append(names, p.workflowName(ent))
+			}
 		}
 		return nil, core.NewError(core.StatusFailedPrecondition, "ROLLBACK_BLOCKED",
-			"%d workflow(s) were changed after the import by someone else; roll back is refused: %s", len(blocked), strings.Join(names, ", ")).
+			"%d workflow(s)/task(s) were changed after the import by someone else; roll back is refused: %s", len(blocked), strings.Join(names, ", ")).
 			With("count", strconv.Itoa(len(blocked))).With("workflows", strings.Join(names, ","))
 	}
 
@@ -984,7 +1197,7 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 		if e.Created {
 			ev.Deltas = append(ev.Deltas, kv{Key: "deleted", New: core.JSON(true)})
 		}
-		if _, err := w.write(ev); err != nil {
+		if err := w.write(ev); err != nil {
 			return nil, internalErr(err)
 		}
 	}
@@ -1009,5 +1222,13 @@ func (s *Store) RollbackImport(ctx context.Context, p Project, actor core.Actor,
 		return nil, internalErr(err)
 	}
 	b.State = ImportRolledBack
+	s.analyzeAfterBulk(ctx)
 	return b.result(p, nil), nil
+}
+
+// analyzeAfterBulk refreshes optimizer statistics after a bulk write. InnoDB recomputes them lazily in the
+// background, and until then the public views can pick a plan that takes tens of seconds (seen right after
+// a 13k-row import). Best effort: a failure only delays the refresh, it never fails the import.
+func (s *Store) analyzeAfterBulk(ctx context.Context) {
+	_, _ = s.DB.ExecContext(ctx, `ANALYZE TABLE entity, entity_latest, event, delta`)
 }

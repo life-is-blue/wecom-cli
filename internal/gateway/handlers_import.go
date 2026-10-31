@@ -105,11 +105,12 @@ func parseActionFilter(f string) (map[string]bool, error) {
 	for _, part := range orSplitRe.Split(f, -1) {
 		m := actionFilterRe.FindStringSubmatch(strings.TrimSpace(part))
 		if m == nil {
-			return nil, invalid("INVALID_FILTER", "filter supports only: action = NEW|CHANGED|UNCHANGED|MISSING|CONFLICT|SUSPECT (joined with OR)")
+			return nil, invalid("INVALID_FILTER", "filter supports only: action = NEW|CHANGED|UNCHANGED|MISSING|CONFLICT|SUSPECT or the task classes TASK_NEW|TASK_CHANGED|TASK_UNCHANGED|TASK_MISSING|TASK_CONFLICT (joined with OR)")
 		}
 		a := strings.ToLower(m[1])
 		switch a {
-		case core.ActionNew, core.ActionChanged, core.ActionUnchanged, core.ActionMissing, core.ActionConflict, core.ActionSuspect:
+		case core.ActionNew, core.ActionChanged, core.ActionUnchanged, core.ActionMissing, core.ActionConflict, core.ActionSuspect,
+			"task_new", "task_changed", "task_unchanged", "task_missing", "task_conflict":
 			out[a] = true
 		default:
 			return nil, invalid("INVALID_FILTER", "unknown action %q", m[1])
@@ -201,6 +202,9 @@ func (s *Server) diffImportJob(q *request, id int64) error {
 		}
 		if r.Match != 0 {
 			l.Match = p.WorkflowName(r.Match)
+			if r.Task {
+				l.Match = p.TaskName(r.Match)
+			}
 		}
 		for _, c := range r.Changes {
 			dc := diffChange{Key: apiKey(c.Key), OldValue: c.Old, NewValue: c.New, Kind: c.Kind}

@@ -54,14 +54,24 @@ type SourceSpec struct {
 	OrderBy string `yaml:"order_by"`
 }
 
-// TasksSpec maps nested tasks of a source row.
+// TasksSpec maps the tasks of a workflow row. Exactly one origin: From (a JSON array inside the
+// row) or Table/Query (a second mysql:// query joined to the rows by ParentKey).
 type TasksSpec struct {
 	// From is the column (or NDJSON key) holding a JSON array of task objects.
 	From string `yaml:"from"`
-	// Name is the key of the task display name inside each element (default "name").
-	Name string `yaml:"name"`
-	// Labels maps task label keys to element keys.
-	Labels map[string]string `yaml:"labels"`
+	// Table or Query selects task rows from the mysql:// source; ParentKey is the column holding the
+	// reference of the owning row (equal to the row's reference value).
+	Table     string `yaml:"table"`
+	Query     string `yaml:"query"`
+	ParentKey string `yaml:"parent_key"`
+	// Reference is the task's column/element key holding its stable id (required, unique in the source).
+	Reference string `yaml:"reference"`
+	// Name is the column/element key of the task display name (default "name").
+	Name        string              `yaml:"name"`
+	Labels      map[string]FieldRef `yaml:"labels"`
+	Annotations map[string]FieldRef `yaml:"annotations"`
+	Assignees   map[string]FieldRef `yaml:"assignees"`
+	HashExclude []string            `yaml:"hash_exclude"`
 }
 
 // Mapping is the parsed mapping.yaml.
@@ -130,8 +140,23 @@ func ParseMapping(b []byte) (*Mapping, error) {
 	if m.Source.Table != "" && m.Source.Query != "" {
 		return nil, errors.New("mapping: source.table and source.query are mutually exclusive")
 	}
-	if m.Tasks != nil && m.Tasks.From == "" {
-		return nil, errors.New("mapping: tasks.from is required")
+	if t := m.Tasks; t != nil {
+		origins := 0
+		for _, v := range []string{t.From, t.Table, t.Query} {
+			if v != "" {
+				origins++
+			}
+		}
+		switch {
+		case t.Reference == "":
+			return nil, errors.New("mapping: tasks.reference (task id column/key) is required")
+		case origins != 1:
+			return nil, errors.New("mapping: tasks needs exactly one of from, table, query")
+		case t.From == "" && t.ParentKey == "":
+			return nil, errors.New("mapping: tasks.parent_key is required with tasks.table/query")
+		case t.From != "" && t.ParentKey != "":
+			return nil, errors.New("mapping: tasks.parent_key only applies to tasks.table/query")
+		}
 	}
 	return &m, nil
 }

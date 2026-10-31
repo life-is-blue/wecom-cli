@@ -88,7 +88,7 @@ cmp -s "$BIN/evidence.txt" "$BIN/evidence.out" && echo "  downloaded file is byt
 
 say "11. governed import: stage, diff, apply, re-stage with a change, roll back"
 cat > "$BIN/rows.ndjson" <<'R'
-{"id":"p1","pipeline_name":"orders_daily","dom":"dwh","prio":"B1"}
+{"id":"p1","pipeline_name":"orders_daily","dom":"dwh","prio":"B1","tasks":[{"tid":"t1","title":"extract orders"},{"tid":"t2","title":"load orders"}]}
 {"id":"p2","pipeline_name":"users_hourly","dom":"dwh","prio":"B2"}
 {"id":"p3","pipeline_name":"billing_monthly","dom":"fin","prio":"A1"}
 R
@@ -99,17 +99,22 @@ fields:
   name: pipeline_name
   domain: dom
   priority: prio
+tasks: {from: tasks, reference: tid, name: title}
 M
 J1=$(as_dev import stage --from "$BIN/rows.ndjson" --map "$BIN/map.yaml" | jget "d['name'].split('/')[-1]")
 echo "  staged job $J1: $(as_dev import diff "$J1" | jget "d['counts']")"
 as_dev import apply "$J1" --yes >/dev/null && echo "  applied"
 echo "  workflows now: $(as_dev query "SELECT COUNT(*) AS n FROM workflows" | jget "d['rows'][0][0]")"
+NT=$(as_dev query "SELECT COUNT(*) AS n FROM tasks" | jget "d['rows'][0][0]")
+[ "$NT" = 2 ] && echo "  tasks now: $NT (imported with their workflow)" || { echo "  FAIL: expected 2 tasks, got $NT"; fail=1; }
 sed -i 's/orders_daily/orders_daily_v2/' "$BIN/rows.ndjson"
 J2=$(as_dev import stage --from "$BIN/rows.ndjson" --map "$BIN/map.yaml" | jget "d['name'].split('/')[-1]")
 C2=$(as_dev import diff "$J2" | jget "d['counts']"); echo "  re-staged job $J2: $C2"
 echo "$C2" | grep -q "CHANGED" && echo "  change detected by row hash" || { echo "  FAIL: expected a CHANGED row"; fail=1; }
 as_dev import apply "$J2" --yes >/dev/null && echo "  applied the change"
 as_dev import rollback "$J2" --yes >/dev/null && echo "  rolled back the second batch"
+NT=$(as_dev query "SELECT COUNT(*) AS n FROM tasks" | jget "d['rows'][0][0]")
+[ "$NT" = 2 ] && echo "  tasks still $NT (the second batch changed none)" || { echo "  FAIL: expected 2 tasks after rollback, got $NT"; fail=1; }
 echo "  platform-owned data untouched: $(as_dev workflow get "$WF" | jget "d['stages'][0]['state']")"
 
 echo; [ $fail -eq 0 ] && echo "DEMO OK" || echo "DEMO FAILED"; exit $fail

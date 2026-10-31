@@ -58,6 +58,9 @@ Other switches: `OPENETL_PUBLIC_URL` (base of signed blob URLs), `OPENETL_TRUST_
 
 ## Status
 
-M0 (contract) done. M1 (gateway, CLI, first Skills) done and covered by `scripts/demo.sh`;
-verified on MySQL 8.0.46 and MariaDB 10.11 (`scripts/dev-mysql.sh` starts a MySQL 8.0 container). Not yet built: attachments, import jobs,
-members/tokens/config endpoints (M2). Design: see `docs/design.md`.
+M0 (contract), M1 (gateway, CLI, Skills) and the import/attachment/admin parts of M2 are done. The full flow
+(compose up, import 3000 workflows with ~9500 tasks, drive the lifecycle through the CLI, management report) runs
+unattended with `scripts/e2e.sh` (`--small` for a 1-minute run); see `docs/quickstart.md`.
+Verified on MySQL 8.0.46. Known limits: `docs/security.md`. Not yet: backups, public-cloud deployment, S3 backend
+tested against a real store, the Dockerfile's `go mod download` step is unverified inside this sandbox.
+Design: see `docs/design.md`.

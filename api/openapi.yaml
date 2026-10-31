@@ -934,6 +934,16 @@ components:
       properties:
         source: {$ref: '#/components/schemas/Source'}
         data: {$ref: '#/components/schemas/Workflow'}
+        tasks:
+          type: array
+          description: 'Tasks of this workflow (primary link). Matched on re-import by the row system + source.reference, which is required.'
+          items: {$ref: '#/components/schemas/ImportTask'}
+    ImportTask:
+      type: object
+      required: [source, data]
+      properties:
+        source: {$ref: '#/components/schemas/Source'}
+        data: {$ref: '#/components/schemas/Task'}
     ImportAction: {type: string, enum: [ACTION_UNSPECIFIED, NEW, CHANGED, UNCHANGED, MISSING, CONFLICT, SUSPECT]}
     ImportJob:
       type: object

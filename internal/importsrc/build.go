@@ -81,15 +81,6 @@ func (m *Mapping) Map(r Row, system string) (api.ImportRow, error) {
 			ann[k] = v
 		}
 	}
-	if m.Tasks != nil {
-		ts, err := m.tasks(r)
-		if err != nil {
-			return api.ImportRow{}, fmt.Errorf("row %s: %w", ref, err)
-		}
-		if ts != "" {
-			ann["tasks"] = ts
-		}
-	}
 	if len(ann) > 0 {
 		a := api.Annotations(ann)
 		wf.Annotations = &a
@@ -129,10 +120,18 @@ func (m *Mapping) Map(r Row, system string) (api.ImportRow, error) {
 			wf.Stages = &sts
 		}
 	}
-	return api.ImportRow{
+	out := api.ImportRow{
 		Source: api.Source{System: &system, Reference: &ref, RowHash: &hash},
 		Data:   wf,
-	}, nil
+	}
+	if m.Tasks != nil && m.Tasks.From != "" {
+		ts, err := m.nestedTasks(r)
+		if err != nil {
+			return api.ImportRow{}, fmt.Errorf("row %s: %w", ref, err)
+		}
+		out.Tasks = ts
+	}
+	return out, nil
 }
 
 func (m *Mapping) stageState(v string) (string, error) {
@@ -148,54 +147,122 @@ func (m *Mapping) stageState(v string) (string, error) {
 	return "", fmt.Errorf("unknown stage value %q (add it to stage_values)", v)
 }
 
-// tasks renders the nested task list as compact JSON: [{"display_name","labels"}].
-func (m *Mapping) tasks(r Row) (string, error) {
+// nestedTasks maps the JSON array in column/key tasks.from (an array, or a string holding one).
+func (m *Mapping) nestedTasks(r Row) (*[]api.ImportTask, error) {
 	raw := r[m.Tasks.From]
 	if s, ok := raw.(string); ok {
 		if strings.TrimSpace(s) == "" {
-			return "", nil
+			return nil, nil
 		}
 		var v any
 		if err := json.Unmarshal([]byte(s), &v); err != nil {
-			return "", fmt.Errorf("tasks column %q is not JSON: %v", m.Tasks.From, err)
+			return nil, fmt.Errorf("tasks column %q is not JSON: %v", m.Tasks.From, err)
 		}
 		raw = v
 	}
 	if raw == nil {
-		return "", nil
+		return nil, nil
 	}
 	arr, ok := raw.([]any)
 	if !ok {
-		return "", fmt.Errorf("tasks column %q must hold a JSON array", m.Tasks.From)
+		return nil, fmt.Errorf("tasks column %q must hold a JSON array", m.Tasks.From)
 	}
-	nameKey := m.Tasks.Name
-	if nameKey == "" {
-		nameKey = "name"
-	}
-	out := make([]map[string]any, 0, len(arr))
+	out := make([]api.ImportTask, 0, len(arr))
 	for i, e := range arr {
 		obj, ok := e.(map[string]any)
 		if !ok {
-			return "", fmt.Errorf("tasks[%d] is not an object", i)
+			return nil, fmt.Errorf("tasks[%d] is not an object", i)
 		}
-		n, _ := text(obj[nameKey])
-		if strings.TrimSpace(n) == "" {
-			return "", fmt.Errorf("tasks[%d] has no %q", i, nameKey)
-		}
-		t := map[string]any{"display_name": strings.TrimSpace(n)}
-		lb := map[string]string{}
-		for lk, ek := range m.Tasks.Labels {
-			if v, ok := text(obj[ek]); ok && strings.TrimSpace(v) != "" {
-				lb[lk] = strings.ToLower(strings.TrimSpace(v))
-			}
-		}
-		if len(lb) > 0 {
-			t["labels"] = lb
+		t, err := m.mapTask(Row(obj))
+		if err != nil {
+			return nil, fmt.Errorf("tasks[%d]: %w", i, err)
 		}
 		out = append(out, t)
 	}
-	b, _ := json.Marshal(out)
-	return string(b), nil
+	return &out, nil
+}
+
+// mapTask maps one task row/element: reference, name, labels, annotations, assignees, hash.
+func (m *Mapping) mapTask(r Row) (api.ImportTask, error) {
+	t := m.Tasks
+	ref, ok := text(r[t.Reference])
+	if ref = strings.TrimSpace(ref); !ok || ref == "" {
+		return api.ImportTask{}, fmt.Errorf("reference %q is empty", t.Reference)
+	}
+	nameKey := t.Name
+	if nameKey == "" {
+		nameKey = "name"
+	}
+	name, ok := text(r[nameKey])
+	if name = strings.TrimSpace(name); !ok || name == "" {
+		return api.ImportTask{}, fmt.Errorf("task %s: %q is empty", ref, nameKey)
+	}
+	hash := Hash(r, t.HashExclude)
+	d := api.Task{DisplayName: name}
+	collect := func(fm map[string]FieldRef, norm func(string) string) map[string]string {
+		out := map[string]string{}
+		for k, f := range fm {
+			if v, ok := m.value(f, r); ok {
+				out[k] = norm(v)
+			}
+		}
+		return out
+	}
+	if l := collect(t.Labels, strings.ToLower); len(l) > 0 {
+		v := api.Labels(l)
+		d.Labels = &v
+	}
+	if a := collect(t.Annotations, func(s string) string { return s }); len(a) > 0 {
+		v := api.Annotations(a)
+		d.Annotations = &v
+	}
+	if a := collect(t.Assignees, accountOf); len(a) > 0 {
+		v := api.Assignees(a)
+		d.Assignees = &v
+	}
+	return api.ImportTask{Source: api.Source{Reference: &ref, RowHash: &hash}, Data: d}, nil
+}
+
+func accountOf(v string) string {
+	if strings.HasPrefix(v, "accounts/") {
+		return v
+	}
+	return "accounts/" + strings.ToLower(v)
+}
+
+// taskScanner is implemented by sources that can run the tasks.table / tasks.query.
+type taskScanner interface {
+	ScanTasks(ctx context.Context, t *TasksSpec, fn func(Row) error) error
+}
+
+// queryTasks reads the task rows of tasks.table/query and groups them by parent reference.
+func (m *Mapping) queryTasks(ctx context.Context, src Source) (map[string][]api.ImportTask, error) {
+	ts, ok := src.(taskScanner)
+	if !ok {
+		return nil, errors.New("tasks.table / tasks.query need a mysql:// source (use tasks.from for files)")
+	}
+	byParent := map[string][]api.ImportTask{}
+	n := 0
+	var errs []error
+	err := ts.ScanTasks(ctx, m.Tasks, func(r Row) error {
+		n++
+		parent, ok := text(r[m.Tasks.ParentKey])
+		if parent = strings.TrimSpace(parent); !ok || parent == "" {
+			errs = append(errs, fmt.Errorf("task row %d: parent_key %q is empty", n, m.Tasks.ParentKey))
+		} else if t, err := m.mapTask(r); err != nil {
+			errs = append(errs, fmt.Errorf("task row %d: %w", n, err))
+		} else {
+			byParent[parent] = append(byParent[parent], t)
+		}
+		if len(errs) >= 10 {
+			return errors.Join(errs...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return byParent, errors.Join(errs...)
 }
 
 // RowError is a mapping failure for one source row.
@@ -217,6 +284,14 @@ func Build(ctx context.Context, src Source, m *Mapping, system string, maxRows i
 	var errs []error
 	seen := map[string]int{}
 	n := 0
+	var tasksOf map[string][]api.ImportTask
+	if m.Tasks != nil && m.Tasks.From == "" {
+		var err error
+		if tasksOf, err = m.queryTasks(ctx, src); err != nil {
+			return nil, err
+		}
+	}
+	seenTask := map[string]string{}
 	err := src.Scan(ctx, func(r Row) error {
 		n++
 		if n > maxRows {
@@ -236,6 +311,20 @@ func Build(ctx context.Context, src Source, m *Mapping, system string, maxRows i
 			return nil
 		}
 		seen[ref] = n
+		if ts := tasksOf[ref]; len(ts) > 0 {
+			ir.Tasks = &ts
+			delete(tasksOf, ref)
+		}
+		if ir.Tasks != nil {
+			sort.Slice(*ir.Tasks, func(i, j int) bool { return *(*ir.Tasks)[i].Source.Reference < *(*ir.Tasks)[j].Source.Reference })
+			for _, t := range *ir.Tasks {
+				tr := *t.Source.Reference
+				if first, dup := seenTask[tr]; dup {
+					return fmt.Errorf("duplicate task reference %q (rows %s and %s)", tr, first, ref)
+				}
+				seenTask[tr] = ref
+			}
+		}
 		rows = append(rows, ir)
 		return nil
 	})
@@ -247,6 +336,17 @@ func Build(ctx context.Context, src Source, m *Mapping, system string, maxRows i
 	}
 	if len(rows) == 0 {
 		return nil, errors.New("source produced no rows")
+	}
+	if len(tasksOf) > 0 {
+		var parents []string
+		for p := range tasksOf {
+			parents = append(parents, p)
+		}
+		sort.Strings(parents)
+		if len(parents) > 5 {
+			parents = parents[:5]
+		}
+		return nil, fmt.Errorf("tasks reference %d unknown parent(s) via %q, e.g. %s", len(tasksOf), m.Tasks.ParentKey, strings.Join(parents, ", "))
 	}
 	sort.Slice(rows, func(i, j int) bool { return *rows[i].Source.Reference < *rows[j].Source.Reference })
 	return rows, nil

@@ -762,6 +762,17 @@ type ImportRow struct {
 
 	// Source Where the record was imported from.
 	Source Source `json:"source"`
+
+	// Tasks Tasks of this workflow (primary link). Matched on re-import by the row system + source.reference, which is required.
+	Tasks *[]ImportTask `json:"tasks,omitempty"`
+}
+
+// ImportTask defines model for ImportTask.
+type ImportTask struct {
+	Data Task `json:"data"`
+
+	// Source Where the record was imported from.
+	Source Source `json:"source"`
 }
 
 // InitUploadRequest defines model for InitUploadRequest.

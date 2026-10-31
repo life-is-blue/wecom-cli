@@ -33,6 +33,19 @@ type ImportRow struct {
 	Hash   string                     `json:"hash"`
 	Code   int64                      `json:"code,omitempty"` // platform workflow id when the row carries a platform code
 	Keys   map[string]json.RawMessage `json:"keys"`
+	Tasks  []ImportTask               `json:"tasks,omitempty"`
+}
+
+// ImportTask is a staged task of a row. Its source system is the row's system; Ref is required.
+type ImportTask struct {
+	Ref  string                     `json:"ref"`
+	Hash string                     `json:"hash"`
+	Keys map[string]json.RawMessage `json:"keys"`
+}
+
+// Row views the task as an import row of the given system, so it is classified like a workflow.
+func (t ImportTask) Row(system string) ImportRow {
+	return ImportRow{System: system, Ref: t.Ref, Hash: t.Hash, Keys: t.Keys}
 }
 
 // ImportExisting is the current state of one workflow as the matcher needs it.

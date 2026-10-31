@@ -28,7 +28,7 @@ labels: {team: team}
 annotations: {remark: remark}
 assignees: {dev_owner: dev}
 stages: {development: dev_status, verify: ver_status}
-tasks: {from: tasks, name: title, labels: {kind: kind}}
+tasks: {from: tasks, reference: tid, name: title, labels: {kind: kind}}
 `
 
 func mapping(t *testing.T) *Mapping {
@@ -59,12 +59,15 @@ func TestHashDeterministicAndSourceAgnostic(t *testing.T) {
 
 func TestMappingValidation(t *testing.T) {
 	for name, y := range map[string]string{
-		"noref":    "fields: {name: a}",
-		"noname":   "reference: [id]\nfields: {domain: a}",
-		"unknown":  "reference: [id]\nfields: {name: a, bogus: b}",
-		"badkey":   "reference: [id]\nfields: {name: a}\nwat: 1",
-		"bothsrc":  "reference: [id]\nfields: {name: a}\nsource: {table: t, query: select 1}",
-		"emptyref": "",
+		"noref":        "fields: {name: a}",
+		"noname":       "reference: [id]\nfields: {domain: a}",
+		"unknown":      "reference: [id]\nfields: {name: a, bogus: b}",
+		"badkey":       "reference: [id]\nfields: {name: a}\nwat: 1",
+		"bothsrc":      "reference: [id]\nfields: {name: a}\nsource: {table: t, query: select 1}",
+		"emptyref":     "",
+		"tasknoref":    "reference: [id]\nfields: {name: a}\ntasks: {from: t}",
+		"taskboth":     "reference: [id]\nfields: {name: a}\ntasks: {from: t, table: x, reference: i, parent_key: p}",
+		"tasknoparent": "reference: [id]\nfields: {name: a}\ntasks: {table: x, reference: i}",
 	} {
 		if _, err := ParseMapping([]byte(y)); err == nil {
 			t.Errorf("%s: want error", name)
@@ -73,7 +76,7 @@ func TestMappingValidation(t *testing.T) {
 }
 
 func TestNDJSONAndMap(t *testing.T) {
-	src := `{"id":7,"pipeline_name":"Load A","dom":"Sales","prio":"P1","team":"X","dev":"Alice","dev_status":"pass","ver_status":"n/a","tasks":[{"title":"t1","kind":"SQL"},{"title":"t2"}],"updated_at":"x"}
+	src := `{"id":7,"pipeline_name":"Load A","dom":"Sales","prio":"P1","team":"X","dev":"Alice","dev_status":"pass","ver_status":"n/a","tasks":[{"tid":"b","title":"t2"},{"tid":"a","title":"t1","kind":"SQL"}],"updated_at":"x"}
 {"id":3,"pipeline_name":"Load B","dom":"HR","area":"","dev_status":"open"}
 `
 	p := filepath.Join(t.TempDir(), "rows.ndjson")
@@ -100,8 +103,10 @@ func TestNDJSONAndMap(t *testing.T) {
 	if len(*d.Stages) != 2 || (*d.Stages)[0].State != "PASSED" || (*d.Stages)[1].State != "NOT_APPLICABLE" {
 		t.Fatalf("stages: %+v", d.Stages)
 	}
-	if (*d.Annotations)["tasks"] != `[{"display_name":"t1","labels":{"kind":"sql"}},{"display_name":"t2"}]` {
-		t.Fatalf("tasks: %v", (*d.Annotations)["tasks"])
+	ts := *r.Tasks // sorted by reference
+	if len(ts) != 2 || *ts[0].Source.Reference != "a" || ts[0].Data.DisplayName != "t1" || (*ts[0].Data.Labels)["kind"] != "sql" ||
+		ts[1].Data.Labels != nil || len(*ts[1].Source.RowHash) != 64 || ts[0].Source.System != nil {
+		t.Fatalf("tasks: %+v", ts)
 	}
 	if *r.Source.System != "legacy" || len(*r.Source.RowHash) != 64 {
 		t.Fatalf("source: %+v", r.Source)
@@ -188,13 +193,16 @@ func TestMySQLScan(t *testing.T) {
 	for _, q := range []string{
 		"DROP TABLE IF EXISTS imp_src",
 		"CREATE TABLE imp_src (id INT PRIMARY KEY, pipeline_name VARCHAR(50), dom VARCHAR(20), prio VARCHAR(5), team VARCHAR(5), dev VARCHAR(10), dev_status VARCHAR(5), ver_status VARCHAR(5), remark TEXT NULL, tasks TEXT NULL, area VARCHAR(5) NULL, updated_at DATETIME NULL)",
-		"INSERT INTO imp_src VALUES (2,'Load 2','HR','P2','t','bob','open','open',NULL,NULL,NULL,'2026-01-01 00:00:00'),(1,'Load 1','Sales','P1','t','amy','pass','na','r','[{\"title\":\"x\"}]','eu',NULL)",
+		"INSERT INTO imp_src VALUES (2,'Load 2','HR','P2','t','bob','open','open',NULL,NULL,NULL,'2026-01-01 00:00:00'),(1,'Load 1','Sales','P1','t','amy','pass','na','r','[{\"tid\":\"x\",\"title\":\"x\"}]','eu',NULL)",
+		"DROP TABLE IF EXISTS imp_task",
+		"CREATE TABLE imp_task (tid INT PRIMARY KEY, pid INT, title VARCHAR(50), owner VARCHAR(10))",
+		"INSERT INTO imp_task VALUES (11,2,'second','Bob'),(10,2,'first',NULL)",
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS imp_src") })
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS imp_src"); db.Exec("DROP TABLE IF EXISTS imp_task") })
 
 	u := url.URL{Scheme: "mysql", User: url.User(cfg.User), Host: cfg.Addr, Path: "/" + cfg.DBName}
 	m := mapping(t)
@@ -227,8 +235,24 @@ func TestMySQLScan(t *testing.T) {
 	// write attempts through the read-only tx must fail
 	m3 := *m
 	m3.Source = SourceSpec{Query: "SELECT * FROM imp_src"}
-	if _, err := m3.sourceQuery(); err != nil {
+	if _, err := selectQuery("source", m3.Source.Table, m3.Source.Query, ""); err != nil {
 		t.Fatal(err)
+	}
+	// tasks from a second table, joined by parent_key; an unknown parent is an error
+	m4 := *m
+	m4.Tasks = &TasksSpec{Table: "imp_task", ParentKey: "pid", Reference: "tid", Name: "title", Assignees: map[string]FieldRef{"dev_owner": {Column: "owner"}}}
+	s4, _ := Open(u.String(), &m4, Options{Getenv: func(string) string { return cfg.Passwd }})
+	rows4, err := Build(context.Background(), s4, &m4, "legacy", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows4[0].Tasks != nil || len(*rows4[1].Tasks) != 2 || *(*rows4[1].Tasks)[0].Source.Reference != "10" ||
+		(*(*rows4[1].Tasks)[1].Data.Assignees)["dev_owner"] != "accounts/bob" {
+		t.Fatalf("tasks from table: %+v", rows4)
+	}
+	m4.Tasks = &TasksSpec{Query: "SELECT tid, 99 AS pid, title FROM imp_task", ParentKey: "pid", Reference: "tid", Name: "title"}
+	if _, err := Build(context.Background(), s4, &m4, "legacy", 0); err == nil || !strings.Contains(err.Error(), "unknown parent") {
+		t.Fatalf("want unknown parent error, got %v", err)
 	}
 	// wrong password: error must not contain it
 	bad, _ := Open(u.String(), m, Options{Getenv: func(string) string { return "wrongpw-XYZ" }})
