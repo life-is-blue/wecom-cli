@@ -21,7 +21,7 @@ expect_fail() { # expect_fail <reason> <cmd...>: command must exit non-zero and 
 DEV=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account alice --side delivery --role admin | tail -1)
 EDT=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account bob --side delivery --role editor | tail -1)
 CUS=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account carol --side customer --role editor | tail -1)
-OPENETL_ADDR=127.0.0.1:$PORT "$BIN/openetl-gateway" serve >"$BIN/gw.log" 2>&1 & GW=$!
+OPENETL_STORAGE=fs OPENETL_STORAGE_DIR="$BIN/blobs" OPENETL_PUBLIC_URL="$OPENETL_BASE_URL" OPENETL_ADDR=127.0.0.1:$PORT "$BIN/openetl-gateway" serve >"$BIN/gw.log" 2>&1 & GW=$!
 trap 'kill $GW 2>/dev/null' EXIT
 for i in $(seq 100); do curl -s -o /dev/null "$OPENETL_BASE_URL/v1/me" && break; sleep 0.1; done
 curl -s -o /dev/null "$OPENETL_BASE_URL/v1/me" || { echo "gateway did not start"; cat "$BIN/gw.log"; exit 1; }
@@ -77,5 +77,39 @@ URL="$OPENETL_BASE_URL/v1/projects/acme-dw/workflows/$WF/events"
 N=$(curl -s -H "Authorization: Bearer $DEV" "$URL" | jget "len(d.get('events',[]))")
 echo "  $N events recorded for $WF"
 [ "$N" -ge 8 ] || { echo "  FAIL expected at least 8 events"; fail=1; }
+
+say "10. evidence: attach a file to a comment and download it back"
+echo "row count report: 1000 = 1000" > "$BIN/evidence.txt"
+CA=$(as_dev comment add "$WF" --kind note --body "verify evidence" --attach "$BIN/evidence.txt" 2>&1)
+echo "$CA" | grep -q '"name"' && echo "  comment with attachment created" || { echo "  FAIL: $CA"; fail=1; }
+ATT=$(echo "$CA" | jget "d['attachments'][0].split('/')[-1]" 2>/dev/null)
+as_dev attachment get "$WF" "$ATT" --output "$BIN/evidence.out" >/dev/null 2>&1
+cmp -s "$BIN/evidence.txt" "$BIN/evidence.out" && echo "  downloaded file is byte-identical" || { echo "  FAIL: download mismatch (att='$ATT')"; fail=1; }
+
+say "11. governed import: stage, diff, apply, re-stage with a change, roll back"
+cat > "$BIN/rows.ndjson" <<'R'
+{"id":"p1","pipeline_name":"orders_daily","dom":"dwh","prio":"B1"}
+{"id":"p2","pipeline_name":"users_hourly","dom":"dwh","prio":"B2"}
+{"id":"p3","pipeline_name":"billing_monthly","dom":"fin","prio":"A1"}
+R
+cat > "$BIN/map.yaml" <<'M'
+source_system: legacy-demo
+reference: [id]
+fields:
+  name: pipeline_name
+  domain: dom
+  priority: prio
+M
+J1=$(as_dev import stage --from "$BIN/rows.ndjson" --map "$BIN/map.yaml" | jget "d['name'].split('/')[-1]")
+echo "  staged job $J1: $(as_dev import diff "$J1" | jget "d['counts']")"
+as_dev import apply "$J1" --yes >/dev/null && echo "  applied"
+echo "  workflows now: $(as_dev query "SELECT COUNT(*) AS n FROM workflows" | jget "d['rows'][0][0]")"
+sed -i 's/orders_daily/orders_daily_v2/' "$BIN/rows.ndjson"
+J2=$(as_dev import stage --from "$BIN/rows.ndjson" --map "$BIN/map.yaml" | jget "d['name'].split('/')[-1]")
+C2=$(as_dev import diff "$J2" | jget "d['counts']"); echo "  re-staged job $J2: $C2"
+echo "$C2" | grep -q "CHANGED" && echo "  change detected by row hash" || { echo "  FAIL: expected a CHANGED row"; fail=1; }
+as_dev import apply "$J2" --yes >/dev/null && echo "  applied the change"
+as_dev import rollback "$J2" --yes >/dev/null && echo "  rolled back the second batch"
+echo "  platform-owned data untouched: $(as_dev workflow get "$WF" | jget "d['stages'][0]['state']")"
 
 echo; [ $fail -eq 0 ] && echo "DEMO OK" || echo "DEMO FAILED"; exit $fail
