@@ -126,7 +126,14 @@ func JSON(v any) json.RawMessage {
 }
 
 // LikeMatch reports whether s matches the SQL LIKE pattern (% and _ wildcards, backslash escape).
-func LikeMatch(pattern, s string) bool {
+func LikeMatch(pattern, s string) bool { return likeMatch(pattern, s, true) }
+
+// RuleMatch matches a rule.k_pattern against a delta key. Only % is a wildcard (and \ escapes
+// the next character); _ is a literal underscore, because stage keys such as dual_run contain it
+// and a seeded pattern like stage.dual_run must not also match stage.dualXrun.
+func RuleMatch(pattern, key string) bool { return likeMatch(pattern, key, false) }
+
+func likeMatch(pattern, s string, underscoreWildcard bool) bool {
 	var b strings.Builder
 	b.WriteString("(?s)^")
 	rs := []rune(pattern)
@@ -142,7 +149,11 @@ func LikeMatch(pattern, s string) bool {
 		case '%':
 			b.WriteString(".*")
 		case '_':
-			b.WriteString(".")
+			if underscoreWildcard {
+				b.WriteString(".")
+			} else {
+				b.WriteString("_")
+			}
 		default:
 			b.WriteString(regexp.QuoteMeta(string(c)))
 		}

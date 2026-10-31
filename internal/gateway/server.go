@@ -11,12 +11,14 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/life-is-blue/openetl-cli/internal/api"
 	"github.com/life-is-blue/openetl-cli/internal/core"
+	"github.com/life-is-blue/openetl-cli/internal/storage"
 	"github.com/life-is-blue/openetl-cli/internal/store"
 )
 
@@ -26,6 +28,11 @@ const errDomain = "openetl"
 type Server struct {
 	Store *store.Store
 	Log   *log.Logger
+	// Storage is the blob backend of attachments; when nil it is created on first use from the
+	// OPENETL_STORAGE* environment (default: fs under ./data/blobs).
+	Storage  storage.Storage
+	storOnce sync.Once
+	storErr  error
 }
 
 // New creates the gateway handler.
@@ -159,6 +166,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, storage.BlobPrefix) {
+		s.serveBlob(w, r) // authenticated by its URL signature, not by bearer token
+		return
+	}
 	segs, verb, ok := splitPath(r.URL.Path)
 	if !ok {
 		s.writeErr(w, notFound("route"))
@@ -211,21 +222,13 @@ func (s *Server) route(q *request) error {
 		}
 		return notFound("route")
 	case "accounts":
-		return unimplemented("account and token management")
+		return s.routeAccounts(q)
 	case "projects":
 	default:
 		return notFound("route")
 	}
 	if n < 2 {
 		return notFound("route")
-	}
-
-	// M2 resources: authenticate only
-	if n >= 3 {
-		switch q.segs[2] {
-		case "members", "importJobs", "config":
-			return unimplemented(q.segs[2])
-		}
 	}
 
 	member, ok, err := s.Store.MemberOf(q.r.Context(), q.project, q.pr.Account.UserName)
@@ -255,6 +258,13 @@ func (s *Server) route(q *request) error {
 		return s.routeWorkflows(q)
 	case "tasks":
 		return s.routeTasks(q)
+	case "importJobs":
+		return s.routeImportJobs(q)
+	case "members", "config":
+		if member.Role != core.RoleAdmin {
+			return core.NewError(core.StatusPermissionDenied, "ROLE_INSUFFICIENT", "this call requires the admin role")
+		}
+		return s.routeAdmin(q)
 	}
 	return notFound("route")
 }
@@ -324,7 +334,7 @@ func (s *Server) routeWorkflows(q *request) error {
 	case "events":
 		return s.routeEvents(q, wf)
 	case "attachments":
-		return unimplemented("attachments")
+		return s.routeAttachments(q, wf)
 	}
 	return notFound("route")
 }

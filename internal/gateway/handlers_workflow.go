@@ -339,9 +339,20 @@ func (s *Server) advanceStage(q *request, id int64) error {
 	if stage == "" {
 		return invalid("INVALID_STAGE", "stage is required")
 	}
-	// evidence_attachments are accepted but not stored in M1 (attachments arrive in M2)
-	plan := func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
-		return []store.PlannedChange{{Key: "stage." + stage, New: strRaw(core.StatePass)}}, nil
+	// evidence_attachments must be attachments of this workflow; they are recorded on the event
+	// as evidence.<stage> (a list of attachment resource names) next to the stage change.
+	var evidence []string
+	if body.EvidenceAttachments != nil && len(*body.EvidenceAttachments) > 0 {
+		if evidence, err = s.Store.ResolveEvidence(q.r.Context(), q.pr.project(), id, *body.EvidenceAttachments); err != nil {
+			return err
+		}
+	}
+	plan := func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
+		ch := []store.PlannedChange{{Key: "stage." + stage, New: strRaw(core.StatePass)}}
+		if len(evidence) > 0 && core.Scalar(cur.Vals["stage."+stage]) != core.StatePass {
+			ch = append(ch, store.PlannedChange{Key: "evidence." + stage, New: core.JSON(evidence)})
+		}
+		return ch, nil
 	}
 	res, err := s.apply(q, "workflow", id, o, plan, timeZero)
 	if err != nil {

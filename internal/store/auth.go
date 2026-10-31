@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/life-is-blue/openetl-cli/internal/core"
 )
 
 // TokenPrefix marks openetl API tokens.
@@ -29,6 +31,15 @@ type Membership struct {
 	Role        string
 	Side        string
 	CreateTime  time.Time
+}
+
+// newTokenSecret returns a fresh random plaintext token.
+func newTokenSecret() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return TokenPrefix + hex.EncodeToString(buf), nil
 }
 
 // HashToken returns the lowercase hex sha256 of a raw token.
@@ -96,6 +107,9 @@ func (s *Store) CreateToken(ctx context.Context, project, account, side, role st
 	if kind == "" {
 		kind = "human"
 	}
+	if kind == "agent" && role == "admin" {
+		return "", core.NewError(core.StatusFailedPrecondition, "AGENT_CANNOT_BE_ADMIN", "agent accounts cannot be admin")
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -116,11 +130,10 @@ func (s *Store) CreateToken(ctx context.Context, project, account, side, role st
 		ON DUPLICATE KEY UPDATE role=VALUES(role), side=VALUES(side)`, pid, account, role, side, now); err != nil {
 		return "", err
 	}
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
+	secret, err := newTokenSecret()
+	if err != nil {
 		return "", err
 	}
-	secret := TokenPrefix + hex.EncodeToString(buf)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO api_token(user_name, token_hash, expires_at, created_at) VALUES(?,?,?,?)`,
 		account, HashToken(secret), now.Add(ttl), now); err != nil {
 		return "", fmt.Errorf("insert token: %w", err)

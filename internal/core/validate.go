@@ -180,7 +180,7 @@ func checkMerge(in Input, after map[string]json.RawMessage) error {
 func checkRules(in Input, c Change, reason *Reason) error {
 	var byKey, byValue []Rule
 	for _, r := range in.Cfg.Rules {
-		if LikeMatch(r.KPattern, c.Key) {
+		if RuleMatch(r.KPattern, c.Key) {
 			byKey = append(byKey, r)
 		}
 	}

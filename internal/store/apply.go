@@ -66,7 +66,22 @@ func (s *Store) apply(ctx context.Context, req ChangeRequest) (res *Result, err 
 		return nil, err
 	}
 	defer tx.Rollback()
+	res, err = s.applyTx(ctx, tx, req)
+	if err != nil {
+		return nil, err
+	}
+	if req.ValidateOnly {
+		return res, nil // deferred Rollback discards everything
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
 
+// applyTx is the body of Apply on a caller-owned transaction (used by import jobs to write many
+// entities atomically). It never commits; with ValidateOnly the caller must roll back.
+func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res *Result, err error) {
 	// 1. lock the entity row
 	if req.EntityID != 0 {
 		var id int64
@@ -242,10 +257,7 @@ func (s *Store) apply(ctx context.Context, req ChangeRequest) (res *Result, err 
 		} else {
 			out.After.ID, out.After.LatestEvent = 0, 0
 		}
-		return out, nil // deferred Rollback discards everything
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+		return out, nil // caller rolls back
 	}
 	return &Result{EntityID: entityID, EventID: eventID, Changes: changes, After: after}, nil
 }

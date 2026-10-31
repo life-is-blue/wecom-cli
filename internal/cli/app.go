@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +33,11 @@ type App struct {
 	HTTP    *http.Client
 	Version string
 	Keyring credentials.Keyring // nil: OS keyring
+
+	// IsTerminal reports whether interactive confirmation is possible (nil: stdin is a character device).
+	IsTerminal func() bool
+	// PollInterval is the wait between import job polls (zero: 2s).
+	PollInterval time.Duration
 
 	// global flags
 	flagProject string
@@ -125,6 +131,7 @@ func (a *App) newRoot() *cobra.Command {
 	root.AddCommand(
 		a.authCmd(), a.meCmd(), a.workflowCmd(), a.taskCmd(), a.stageCmd(),
 		a.scopeCmd(), a.commentCmd(), a.queryCmd(), a.viewsCmd(),
+		a.eventsCmd(), a.attachmentCmd(), a.memberCmd(), a.tokenCmd(), a.configCmd(), a.importCmd(),
 	)
 	return root
 }

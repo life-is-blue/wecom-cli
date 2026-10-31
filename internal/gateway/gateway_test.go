@@ -403,15 +403,7 @@ func urlEnc(s string) string {
 func TestNotImplementedAndErrors(t *testing.T) {
 	f := newFixture(t)
 	base := "/v1/projects/" + f.project
-	for _, p := range []struct{ method, path string }{
-		{"POST", base + "/workflows/wf-000001/attachments"},
-		{"POST", base + "/workflows/wf-000001/attachments:initUpload"},
-		{"GET", base + "/workflows/wf-000001/attachments/at-000001:download"},
-		{"POST", base + "/importJobs"},
-		{"GET", base + "/members"},
-		{"GET", base + "/config"},
-		{"POST", "/v1/accounts/alice/tokens"},
-	} {
+	for _, p := range []struct{ method, path string }{} {
 		r := f.do(f.admin, p.method, p.path, map[string]any{})
 		if r.code != 501 {
 			t.Errorf("%s %s: want 501, got %d %s", p.method, p.path, r.code, r.raw)

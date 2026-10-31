@@ -10,8 +10,9 @@ import (
 )
 
 func (a *App) taskCmd() *cobra.Command {
-	return group("task", "Create, read, update and assign tasks",
-		a.taskCreate(), a.taskGet(), a.taskList(), a.taskUpdate(), a.taskAssign())
+	return group("task", "Create, read, update, assign, delete and restore tasks",
+		a.taskCreate(), a.taskGet(), a.taskList(), a.taskUpdate(), a.taskAssign(),
+		a.taskDelete(), a.taskRestore())
 }
 
 func (a *App) taskCreate() *cobra.Command {
