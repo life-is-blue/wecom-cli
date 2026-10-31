@@ -64,6 +64,13 @@ Rollback story: migrations are forward-only and additive (rules below), so the *
 
 With the least-privilege user (below), run `openetl-server migrate` with the owner account first; `serve` then finds nothing to apply.
 
+### Migration 0007 and existing databases (pre-release)
+
+0007 changes the task model: a task belongs to exactly one workflow and keeps one key, `workflow` (the workflow's entity id), instead of the
+`in.<workflow>` link keys with a primary flag; `tasks.primary_workflow_id` is now `tasks.workflow_id`. The migration only replaces the views. There is
+no production data before the first release, so **databases created before 0007 must be recreated** (drop, create, `openetl-server migrate`, re-import):
+their tasks still carry the old keys, have no `workflow` key and show `workflow_id = NULL`.
+
 ### Schema changes: expand / contract
 
 Never edit or delete a committed migration; `scripts/check-migrations.sh` compares every file against `docs/migrations.sha256` and fails on any difference, a gap in numbering, or a deleted file. A new migration may contain only additive DDL (`CREATE TABLE`, `CREATE [UNIQUE] INDEX`, `ALTER TABLE .. ADD ..`, `CREATE OR REPLACE VIEW`, `INSERT IGNORE`, `SET NAMES`); the lint flags `DROP`, `RENAME`, `MODIFY`, `CHANGE`, `ALTER .. DROP`, `TRUNCATE`, `DELETE`, `UPDATE`.

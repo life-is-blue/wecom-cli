@@ -30,30 +30,6 @@ func (e AccountKind) Valid() bool {
 	}
 }
 
-// Defines values for AssignTaskRequestMembership.
-const (
-	MEMBERSHIPUNSPECIFIED AssignTaskRequestMembership = "MEMBERSHIP_UNSPECIFIED"
-	NONE                  AssignTaskRequestMembership = "NONE"
-	PRIMARY               AssignTaskRequestMembership = "PRIMARY"
-	SHARED                AssignTaskRequestMembership = "SHARED"
-)
-
-// Valid indicates whether the value is a known member of the AssignTaskRequestMembership enum.
-func (e AssignTaskRequestMembership) Valid() bool {
-	switch e {
-	case MEMBERSHIPUNSPECIFIED:
-		return true
-	case NONE:
-		return true
-	case PRIMARY:
-		return true
-	case SHARED:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for CommentKind.
 const (
 	CommentKindISSUE           CommentKind = "ISSUE"
@@ -510,7 +486,11 @@ type AccountKind string
 // AdvanceStageRequest defines model for AdvanceStageRequest.
 type AdvanceStageRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
-	Etag                *string   `json:"etag,omitempty"`
+	Etag *string `json:"etag,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
 	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
 	Note                *string   `json:"note,omitempty"`
 
@@ -536,21 +516,20 @@ type AssignTaskRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
 
-	// Membership NONE detaches the task from the workflow.
-	Membership AssignTaskRequestMembership `json:"membership"`
-	Note       *string                     `json:"note,omitempty"`
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
+	Note                *string   `json:"note,omitempty"`
 
 	// Reason reason_key from the project config, e.g. rej_row_count.
 	Reason       *string             `json:"reason,omitempty"`
 	RequestId    *openapi_types.UUID `json:"request_id,omitempty"`
 	ValidateOnly *bool               `json:"validate_only,omitempty"`
 
-	// Workflow Workflow resource name.
+	// Workflow Workflow resource name to move the task to.
 	Workflow string `json:"workflow"`
 }
-
-// AssignTaskRequestMembership NONE detaches the task from the workflow.
-type AssignTaskRequestMembership string
 
 // Assignees Role (e.g. dev_owner, customer_pic, verify_pic) to account.
 //
@@ -817,12 +796,13 @@ type ImportRow struct {
 	// Source Where the record was imported from.
 	Source Source `json:"source"`
 
-	// Tasks Tasks of this workflow (primary link). Matched on re-import by the row system + source.reference, which is required.
+	// Tasks Tasks of this workflow (each task belongs to this workflow). Matched on re-import by the row system + source.reference, which is required.
 	Tasks *[]ImportTask `json:"tasks,omitempty"`
 }
 
 // ImportTask defines model for ImportTask.
 type ImportTask struct {
+	// Data A task belongs to exactly one workflow. `workflow` is required on create and changes only through `:assign`.
 	Data Task `json:"data"`
 
 	// Source Where the record was imported from.
@@ -915,7 +895,12 @@ type MemberSide string
 type MutationOptions struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
-	Note *string `json:"note,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
+	Note                *string   `json:"note,omitempty"`
 
 	// Reason reason_key from the project config, e.g. rej_row_count.
 	Reason       *string             `json:"reason,omitempty"`
@@ -959,7 +944,12 @@ type QueryResponse struct {
 type RegressStageRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
-	Note *string `json:"note,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
+	Note                *string   `json:"note,omitempty"`
 
 	// Reason reject-kind reason_key.
 	Reason       string              `json:"reason"`
@@ -978,6 +968,11 @@ type Scope string
 type SetScopeRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
 
 	// MergedInto Workflow resource name; required when reason is merged.
 	MergedInto *string `json:"merged_into,omitempty"`
@@ -1023,7 +1018,7 @@ type StageStatus struct {
 	State StageState `json:"state"`
 }
 
-// Task defines model for Task.
+// Task A task belongs to exactly one workflow. `workflow` is required on create and changes only through `:assign`.
 type Task struct {
 	// Annotations Free text; not filterable.
 	Annotations *Annotations `json:"annotations,omitempty"`
@@ -1048,16 +1043,9 @@ type Task struct {
 	Source *Source `json:"source,omitempty"`
 	Uid    *string `json:"uid,omitempty"`
 
-	// Workflows Changed via :assign (initial list allowed on create).
-	Workflows *[]TaskMembership `json:"workflows,omitempty"`
-}
-
-// TaskMembership defines model for TaskMembership.
-type TaskMembership struct {
-	// Primary At most one primary per task.
-	Primary *bool `json:"primary,omitempty"`
-
-	// Workflow Workflow resource name.
+	// Workflow Workflow resource name. Set on create, changed via :assign (ignored by update masks).
+	//
+	// Example: projects/acme-dw/workflows/wf-000123
 	Workflow string `json:"workflow"`
 }
 
@@ -1078,20 +1066,32 @@ type Token struct {
 type UpdateTaskRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
-	Note *string `json:"note,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
+	Note                *string   `json:"note,omitempty"`
 
 	// Reason reason_key from the project config, e.g. rej_row_count.
-	Reason       *string             `json:"reason,omitempty"`
-	RequestId    *openapi_types.UUID `json:"request_id,omitempty"`
-	Task         Task                `json:"task"`
-	ValidateOnly *bool               `json:"validate_only,omitempty"`
+	Reason    *string             `json:"reason,omitempty"`
+	RequestId *openapi_types.UUID `json:"request_id,omitempty"`
+
+	// Task A task belongs to exactly one workflow. `workflow` is required on create and changes only through `:assign`.
+	Task         Task  `json:"task"`
+	ValidateOnly *bool `json:"validate_only,omitempty"`
 }
 
 // UpdateWorkflowRequest defines model for UpdateWorkflowRequest.
 type UpdateWorkflowRequest struct {
 	// Etag Expected etag of the target (derived from its latest event).
 	Etag *string `json:"etag,omitempty"`
-	Note *string `json:"note,omitempty"`
+
+	// EvidenceAttachments Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+	// rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+	// Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+	EvidenceAttachments *[]string `json:"evidence_attachments,omitempty"`
+	Note                *string   `json:"note,omitempty"`
 
 	// Reason reason_key from the project config, e.g. rej_row_count.
 	Reason       *string             `json:"reason,omitempty"`

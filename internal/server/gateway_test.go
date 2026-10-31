@@ -175,8 +175,6 @@ func TestHappyPath(t *testing.T) {
 	f.wantErr(f.do(f.editor, "POST", path+":advanceStage", map[string]any{"stage": "accept"}), 403, "PERMISSION_DENIED", "SIDE_NOT_ALLOWED")
 	f.wantErr(f.do(f.viewer, "POST", path+":advanceStage", map[string]any{"stage": "accept"}), 403, "PERMISSION_DENIED", "ROLE_INSUFFICIENT")
 	f.wantOK(f.do(f.cust, "POST", path+":advanceStage", map[string]any{"stage": "accept"}))
-	// admin acts for any side
-	f.wantOK(f.do(f.admin, "POST", path+":advanceStage", map[string]any{"stage": "dual_run"}))
 
 	// regress
 	f.wantErr(f.do(f.editor, "POST", path+":regressStage", map[string]any{"stages": []string{"verify"}}), 400, "FAILED_PRECONDITION", "REASON_REQUIRED")
@@ -185,6 +183,17 @@ func TestHappyPath(t *testing.T) {
 	if str(rg.body, "current_stage") != "accept" {
 		t.Fatal(rg.raw)
 	}
+	// a regress may not leave a later stage PASSED, and there is no cascade
+	f.wantOK(f.do(f.cust, "POST", path+":advanceStage", map[string]any{"stage": "accept"}))
+	// an admin of the delivery side advances delivery stages like anyone (the customer's stages need evidence, see TestAdminOverride)
+	f.wantOK(f.do(f.admin, "POST", path+":advanceStage", map[string]any{"stage": "dual_run"}))
+	lr := f.do(f.cust, "POST", path+":regressStage", map[string]any{"stages": []string{"accept"}, "reason": "rej_row_count"})
+	f.wantErr(lr, 400, "FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
+	if md := lr.body["error"].(map[string]any)["details"].([]any)[0].(map[string]any)["metadata"].(map[string]any); md["stages"] != "dual_run" {
+		t.Fatalf("metadata %v", md)
+	}
+	f.wantOK(f.do(f.admin, "POST", path+":regressStage", map[string]any{"stages": []string{"dual_run"}, "reason": "rej_row_count"}))
+	f.wantOK(f.do(f.cust, "POST", path+":regressStage", map[string]any{"stages": []string{"accept"}, "reason": "rej_row_count"}))
 
 	// comments -> health
 	c := f.wantOK(f.do(f.editor, "POST", path+"/comments", map[string]any{"kind": "ISSUE", "body": "目标库权限未开通"}))
@@ -351,35 +360,22 @@ func TestUpdateScopeDeleteTasks(t *testing.T) {
 	}
 
 	// tasks
-	t1 := f.wantOK(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "load_orders", "labels": map[string]string{"kind": "etl"},
-		"workflows": []any{map[string]any{"workflow": n1, "primary": true}}}))
+	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "no_workflow"}), 400, "INVALID_ARGUMENT", "INVALID_WORKFLOW")
+	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "x", "workflow": "projects/" + f.project + "/workflows/wf-999999"}), 400, "INVALID_ARGUMENT", "WORKFLOW_NOT_FOUND")
+	t1 := f.wantOK(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "load_orders", "labels": map[string]string{"kind": "etl"}, "workflow": n1}))
 	tname := str(t1.body, "name")
-	if !strings.HasPrefix(tname, "projects/"+f.project+"/tasks/tk-") || len(t1.body["workflows"].([]any)) != 1 {
+	if !strings.HasPrefix(tname, "projects/"+f.project+"/tasks/tk-") || t1.body["workflow"] != n1 || t1.body["workflows"] != nil {
 		t.Fatal(t1.raw)
 	}
-	as := f.wantOK(f.do(f.editor, "POST", "/v1/"+tname+":assign", map[string]any{"workflow": n2, "membership": "PRIMARY"}))
-	ws := as.body["workflows"].([]any)
-	if len(ws) != 2 {
+	as := f.wantOK(f.do(f.editor, "POST", "/v1/"+tname+":assign", map[string]any{"workflow": n2}))
+	if as.body["workflow"] != n2 {
 		t.Fatal(as.raw)
 	}
-	primaries := 0
-	for _, w := range ws {
-		if w.(map[string]any)["primary"] == true {
-			primaries++
-			if w.(map[string]any)["workflow"] != n2 {
-				t.Fatal("wrong primary")
-			}
-		}
-	}
-	if primaries != 1 {
-		t.Fatal(as.raw)
-	}
-	f.wantOK(f.do(f.editor, "POST", "/v1/"+tname+":assign", map[string]any{"workflow": n1, "membership": "NONE"}))
-	tl := f.wantOK(f.do(f.viewer, "GET", base+"/tasks?filter="+urlEnc(`workflows.workflow = "`+n2+`"`), nil))
+	tl := f.wantOK(f.do(f.viewer, "GET", base+"/tasks?filter="+urlEnc(`workflow = "`+n2+`"`), nil))
 	if len(tl.body["tasks"].([]any)) != 1 {
 		t.Fatal(tl.raw)
 	}
-	tl = f.wantOK(f.do(f.viewer, "GET", base+"/tasks?filter="+urlEnc(`workflows.workflow = "`+n1+`"`), nil))
+	tl = f.wantOK(f.do(f.viewer, "GET", base+"/tasks?filter="+urlEnc(`workflow = "`+n1+`"`), nil))
 	if len(tl.body["tasks"].([]any)) != 0 {
 		t.Fatal(tl.raw)
 	}
@@ -388,7 +384,7 @@ func TestUpdateScopeDeleteTasks(t *testing.T) {
 		t.Fatal(tu.raw)
 	}
 	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+tname, nil))
-	f.wantErr(f.do(f.editor, "POST", "/v1/"+tname+":assign", map[string]any{"workflow": "projects/" + f.project + "/workflows/wf-999999", "membership": "SHARED"}), 400, "INVALID_ARGUMENT", "WORKFLOW_NOT_FOUND")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+tname+":assign", map[string]any{"workflow": "projects/" + f.project + "/workflows/wf-999999"}), 400, "INVALID_ARGUMENT", "WORKFLOW_NOT_FOUND")
 	tl = f.wantOK(f.do(f.viewer, "GET", base+"/tasks", nil))
 	if len(tl.body["tasks"].([]any)) != 0 {
 		t.Fatal("deleted task listed")
@@ -470,33 +466,30 @@ func TestDeletedEntitiesRejectWrites(t *testing.T) {
 	wn := str(w.body, "name")
 	w2 := f.wantOK(f.do(f.editor, "POST", base+"/workflows", map[string]any{"display_name": "w2"}))
 	c := f.wantOK(f.do(f.editor, "POST", "/v1/"+wn+"/comments", map[string]any{"kind": "ISSUE", "body": "b"}))
-	tk := f.wantOK(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t", "workflows": []any{map[string]any{"workflow": wn, "primary": true}}}))
+	tk := f.wantOK(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t", "workflow": wn}))
 	tn := str(tk.body, "name")
+	w2n := str(w2.body, "name")
 
-	// a second primary is refused at creation; assigning PRIMARY moves the primary instead
-	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t2", "workflows": []any{
-		map[string]any{"workflow": wn, "primary": true}, map[string]any{"workflow": str(w2.body, "name"), "primary": true}}}), 400, "INVALID_ARGUMENT", "MULTIPLE_PRIMARY")
-	mv := f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": str(w2.body, "name"), "membership": "PRIMARY"}))
-	primaries := 0
-	for _, m := range mv.body["workflows"].([]any) {
-		if m.(map[string]any)["primary"] == true {
-			primaries++
-		}
+	// a task has one workflow: create needs it, :assign moves it
+	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "t2"}), 400, "INVALID_ARGUMENT", "INVALID_WORKFLOW")
+	mv := f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": w2n}))
+	if mv.body["workflow"] != w2n {
+		t.Fatalf("moved task is in %v: %s", mv.body["workflow"], mv.raw)
 	}
-	if primaries != 1 {
-		t.Fatalf("moving the primary left %d primaries: %s", primaries, mv.raw)
-	}
+	f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": wn}))
 
-	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+wn, nil))
+	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+wn, nil)) // takes the task along (INV-30)
 	f.wantOK(f.do(f.editor, "DELETE", "/v1/"+tn, nil))
 	pre := "FAILED_PRECONDITION"
 	f.wantErr(f.do(f.editor, "PATCH", "/v1/"+wn+"?update_mask=display_name", map[string]any{"workflow": map[string]any{"display_name": "x"}}), 400, pre, "ENTITY_DELETED")
 	f.wantErr(f.do(f.editor, "POST", "/v1/"+wn+":advanceStage", map[string]any{"stage": "development"}), 400, pre, "ENTITY_DELETED")
 	f.wantErr(f.do(f.editor, "POST", "/v1/"+wn+":setScope", map[string]any{"scope": "OUT_OF_SCOPE", "reason": "obsolete"}), 400, pre, "ENTITY_DELETED")
 	f.wantErr(f.do(f.editor, "PATCH", "/v1/"+tn+"?update_mask=display_name", map[string]any{"task": map[string]any{"display_name": "x"}}), 400, pre, "ENTITY_DELETED")
-	f.wantErr(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": str(w2.body, "name"), "membership": "SHARED"}), 400, pre, "ENTITY_DELETED")
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+tn+":assign", map[string]any{"workflow": w2n}), 400, pre, "ENTITY_DELETED")
 	f.wantErr(f.do(f.editor, "POST", "/v1/"+str(c.body, "name")+":resolve", nil), 400, pre, "ENTITY_DELETED")
 	f.wantOK(f.do(f.editor, "GET", "/v1/"+wn, nil)) // reads stay
+	f.wantErr(f.do(f.editor, "POST", "/v1/"+tn+":undelete", nil), 400, pre, "PARENT_DELETED")
+	f.wantErr(f.do(f.editor, "POST", base+"/tasks", map[string]any{"display_name": "late", "workflow": wn}), 400, pre, "ENTITY_DELETED")
 	f.wantOK(f.do(f.editor, "POST", "/v1/"+wn+":undelete", nil))
 	f.wantOK(f.do(f.editor, "POST", "/v1/"+tn+":undelete", nil))
 	f.wantOK(f.do(f.editor, "POST", "/v1/"+str(c.body, "name")+":resolve", nil))

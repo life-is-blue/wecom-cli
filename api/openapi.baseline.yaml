@@ -21,7 +21,7 @@ security:
 tags:
   - {name: Identity, description: The calling account and its memberships.}
   - {name: Workflows, description: 'Workflows: lifecycle stages, scope, soft delete.'}
-  - {name: Tasks, description: 'Tasks and their membership in workflows.'}
+  - {name: Tasks, description: 'Tasks; each belongs to exactly one workflow.'}
   - {name: Comments, description: 'Notes, questions, issues and risks on a workflow.'}
   - {name: Attachments, description: 'Evidence blobs: staged upload, then registration.'}
   - {name: Events, description: Read-only audit trail.}
@@ -47,7 +47,8 @@ paths:
       operationId: listWorkflows
       summary: List workflows
       description: |
-        `filter` supports `field = value`, `AND`/`OR`/`NOT`, `labels.<k> = v`, `health`, `scope`,
+        `filter` supports `field = value`, `AND`/`OR`/`NOT` (two conditions need an explicit `AND` or `OR` between them: there is no implicit AND, a bare
+        juxtaposition answers INVALID_ARGUMENT/AMBIGUOUS_FILTER, as does an unparenthesised mix of AND and OR), `labels.<k> = v`, `health`, `scope`,
         `current_stage`, `stages.<stage> = PASSED`, `assignees.<role>`, `display_name:substr`.
         `order_by` e.g. `create_time desc, name`.
       parameters:
@@ -137,6 +138,9 @@ paths:
       description: |
         Every earlier stage must be PASSED or NOT_APPLICABLE (else FAILED_PRECONDITION/STAGE_ORDER_VIOLATION).
         Which side may advance which stage is decided by the rule table (else PERMISSION_DENIED/SIDE_NOT_ALLOWED).
+        An `admin` of the other side may do it only with `evidence_attachments` (else FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE);
+        the event then carries an `override.stage.<stage>` record. The same holds for every call that hits a side-restricted rule
+        (`regressStage`, `setScope`, `updateWorkflow` with the `stages` mask).
       requestBody:
         required: true
         content:
@@ -178,7 +182,7 @@ paths:
       tags: [Workflows]
       operationId: regressStage
       summary: Set PASSED stages back to OPEN in one event
-      description: A reject-kind `reason` is required (REASON_REQUIRED). A stage that is not PASSED yields NOT_REGRESSIBLE.
+      description: A reject-kind `reason` is required (REASON_REQUIRED). A stage that is not PASSED yields NOT_REGRESSIBLE. A regress that would leave a later stage PASSED is refused with REGRESS_LATER_STAGES_PASSED (the error names the stages to add; there is no automatic cascade). Several stages may be regressed in one call.
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/RegressStageRequest'}}}
@@ -209,7 +213,7 @@ paths:
       tags: [Tasks]
       operationId: listTasks
       summary: List tasks
-      description: '`filter` additionally supports `workflows.workflow = "projects/p/workflows/w"`.'
+      description: '`filter` additionally supports `workflow = "projects/p/workflows/w"`.'
       parameters:
         - {$ref: '#/components/parameters/PageSize'}
         - {$ref: '#/components/parameters/PageToken'}
@@ -222,7 +226,8 @@ paths:
     post:
       tags: [Tasks]
       operationId: createTask
-      summary: Create a task
+      summary: Create a task in a workflow
+      description: '`workflow` (resource name of a live workflow) is required. A deleted workflow answers FAILED_PRECONDITION/ENTITY_DELETED.'
       parameters:
         - name: task_id
           in: query
@@ -251,7 +256,7 @@ paths:
       tags: [Tasks]
       operationId: updateTask
       summary: Update a task
-      description: Updatable via mask - `display_name`, `labels`, `annotations`, `assignees`. Membership changes use `:assign`.
+      description: Updatable via mask - `display_name`, `labels`, `annotations`, `assignees`. Moving the task to another workflow uses `:assign`.
       parameters:
         - {$ref: '#/components/parameters/UpdateMask'}
       requestBody:
@@ -279,7 +284,7 @@ paths:
       tags: [Tasks]
       operationId: undeleteTask
       summary: Restore a soft-deleted task
-      description: 'Idempotent: a task that is not deleted is returned unchanged.'
+      description: 'Idempotent: a task that is not deleted is returned unchanged. A task whose workflow is deleted is refused with FAILED_PRECONDITION/PARENT_DELETED (undelete the workflow: it restores the tasks its delete took along).'
       requestBody: {$ref: '#/components/requestBodies/Mutation'}
       responses:
         '200': {$ref: '#/components/responses/Task'}
@@ -290,7 +295,8 @@ paths:
     post:
       tags: [Tasks]
       operationId: assignTask
-      summary: Attach a task to a workflow, change its membership, or detach it
+      summary: Move a task to another workflow
+      description: 'The target workflow must be live (WORKFLOW_NOT_FOUND if it does not exist, FAILED_PRECONDITION/ENTITY_DELETED if it is deleted). Moving to the current workflow changes nothing.'
       requestBody:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/AssignTaskRequest'}}}
@@ -653,9 +659,9 @@ components:
   responses:
     Error:
       description: |
-        Error. Statuses: INVALID_ARGUMENT 400 (e.g. DUPLICATE_PRIMARY), UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
+        Error. Statuses: INVALID_ARGUMENT 400 (e.g. AMBIGUOUS_FILTER), UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
         NOT_FOUND 404, ALREADY_EXISTS 409, ABORTED 409 (ETAG_MISMATCH),
-        FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE, ENTITY_DELETED),
+        FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE, REGRESS_LATER_STAGES_PASSED, ENTITY_DELETED, PARENT_DELETED, EVIDENCE_REQUIRED_FOR_OVERRIDE),
         RESOURCE_EXHAUSTED 429 (with Retry-After), UNIMPLEMENTED 501, INTERNAL 500.
         Every error carries exactly one ErrorInfo (reason matches [A-Z][A-Z0-9_]+[A-Z0-9], domain `openetl`).
       content:
@@ -730,6 +736,13 @@ components:
         note: {type: string}
         request_id: {type: string, format: uuid}
         validate_only: {type: boolean}
+        evidence_attachments:
+          type: array
+          description: |
+            Attachments of the target workflow (resource names) that prove the change. Required when an admin makes a change the
+            rule table reserves for the other side (FAILED_PRECONDITION/EVIDENCE_REQUIRED_FOR_OVERRIDE otherwise); recorded on the event.
+            Used by advanceStage, regressStage, setScope and updateWorkflow; ignored elsewhere.
+          items: {type: string, description: Attachment resource name.}
     Side: {type: string, description: 'Which party acted; SYSTEM for imports and automation.', enum: [SIDE_UNSPECIFIED, DELIVERY, CUSTOMER, SYSTEM]}
     MemberSide: {type: string, enum: [SIDE_UNSPECIFIED, DELIVERY, CUSTOMER]}
     StageState: {type: string, description: 'State of one stage of one workflow.', enum: [STATE_UNSPECIFIED, OPEN, PASSED, NOT_APPLICABLE]}
@@ -778,7 +791,6 @@ components:
           required: [stage]
           properties:
             stage: {$ref: '#/components/schemas/StageKey'}
-            evidence_attachments: {type: array, items: {type: string, description: Attachment resource name.}}
     RegressStageRequest:
       allOf:
         - {$ref: '#/components/schemas/MutationOptions'}
@@ -802,15 +814,10 @@ components:
         next_page_token: {type: string}
 
     # ----------------------------------------------------------------- tasks
-    TaskMembership:
-      type: object
-      required: [workflow]
-      properties:
-        workflow: {type: string, description: Workflow resource name.}
-        primary: {type: boolean, description: At most one primary per task.}
     Task:
       type: object
-      required: [display_name]
+      required: [display_name, workflow]
+      description: 'A task belongs to exactly one workflow. `workflow` is required on create and changes only through `:assign`.'
       properties:
         name: {type: string, readOnly: true, example: projects/acme-dw/tasks/tk-004567}
         uid: {type: string, readOnly: true}
@@ -819,7 +826,7 @@ components:
         labels: {$ref: '#/components/schemas/Labels'}
         annotations: {$ref: '#/components/schemas/Annotations'}
         assignees: {$ref: '#/components/schemas/Assignees'}
-        workflows: {type: array, readOnly: true, description: 'Changed via :assign (initial list allowed on create).', items: {$ref: '#/components/schemas/TaskMembership'}}
+        workflow: {type: string, description: 'Workflow resource name. Set on create, changed via :assign (ignored by update masks).', example: projects/acme-dw/workflows/wf-000123}
         source: {$ref: '#/components/schemas/Source'}
         creator: {type: string, readOnly: true}
         create_time: {type: string, format: date-time, readOnly: true}
@@ -835,13 +842,9 @@ components:
       allOf:
         - {$ref: '#/components/schemas/MutationOptions'}
         - type: object
-          required: [workflow, membership]
+          required: [workflow]
           properties:
-            workflow: {type: string, description: Workflow resource name.}
-            membership:
-              type: string
-              enum: [MEMBERSHIP_UNSPECIFIED, PRIMARY, SHARED, NONE]
-              description: NONE detaches the task from the workflow.
+            workflow: {type: string, description: Workflow resource name to move the task to.}
     ListTasksResponse:
       type: object
       properties:
@@ -960,7 +963,7 @@ components:
         data: {$ref: '#/components/schemas/Workflow'}
         tasks:
           type: array
-          description: 'Tasks of this workflow (primary link). Matched on re-import by the row system + source.reference, which is required.'
+          description: 'Tasks of this workflow (each task belongs to this workflow). Matched on re-import by the row system + source.reference, which is required.'
           items: {$ref: '#/components/schemas/ImportTask'}
     ImportTask:
       type: object

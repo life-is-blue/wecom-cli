@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -71,6 +72,9 @@ func TestValidate(t *testing.T) {
 		id     int64
 		status string // "" = ok
 		code   string
+		ev     []string // evidence attachments of the request
+		over   string   // want an override record with this side (key override.<first change key>)
+		typ    string   // entity type, default workflow
 	}{
 		{name: "advance first stage", actor: delivery, ch: []Change{{Key: "stage.development", New: j(`"pass"`)}}},
 		{name: "free key", actor: delivery, ch: []Change{{Key: "attr.domain", New: j(`"x"`)}}},
@@ -89,9 +93,30 @@ func TestValidate(t *testing.T) {
 		{name: "accept by customer ok", actor: customer,
 			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`), "stage.deployment": j(`"pass"`), "stage.verify": j(`"pass"`)},
 			ch:  []Change{{Key: "stage.accept", New: j(`"pass"`)}}},
-		{name: "accept by admin ok", actor: admin,
+		{name: "accept by admin without evidence", actor: admin,
+			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`), "stage.deployment": j(`"pass"`), "stage.verify": j(`"pass"`)},
+			ch:  []Change{{Key: "stage.accept", New: j(`"pass"`)}}, status: StatusFailedPrecondition, code: "EVIDENCE_REQUIRED_FOR_OVERRIDE"},
+		{name: "accept by admin with evidence is an override", actor: admin, ev: []string{"projects/p/workflows/wf-000001/attachments/at-000001"}, over: "customer",
 			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`), "stage.deployment": j(`"pass"`), "stage.verify": j(`"pass"`)},
 			ch:  []Change{{Key: "stage.accept", New: j(`"pass"`)}}},
+		{name: "development by admin of its own side needs no evidence", actor: admin,
+			ch: []Change{{Key: "stage.development", New: j(`"pass"`)}}},
+		{name: "evidence from a non-admin does not open the other side", actor: delivery, ev: []string{"x"},
+			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`), "stage.deployment": j(`"pass"`), "stage.verify": j(`"pass"`)},
+			ch:  []Change{{Key: "stage.accept", New: j(`"pass"`)}}, status: StatusPermissionDenied, code: "SIDE_NOT_ALLOWED"},
+		{name: "admin reopens accept for the customer with evidence", actor: admin, reason: "rej_row_count", ev: []string{"x"}, over: "customer",
+			cur: map[string]json.RawMessage{"stage.accept": j(`"pass"`)},
+			ch:  []Change{{Key: "stage.accept", Old: j(`"pass"`), New: j(`"open"`)}}},
+		{name: "task placed in a deleted workflow", actor: delivery, typ: "task",
+			ch: []Change{{Key: "workflow", New: j(`99`)}}, status: StatusFailedPrecondition, code: "ENTITY_DELETED"},
+		{name: "task placed in a live workflow", actor: delivery, typ: "task",
+			ch: []Change{{Key: "workflow", New: j(`1`)}}},
+		{name: "task undelete under a deleted workflow", actor: delivery, typ: "task", id: 7,
+			cur: map[string]json.RawMessage{"deleted": j(`true`), "workflow": j(`99`)},
+			ch:  []Change{{Key: "deleted", Old: j(`true`), New: j(`false`)}}, status: StatusFailedPrecondition, code: "PARENT_DELETED"},
+		{name: "task undelete under a live workflow", actor: delivery, typ: "task", id: 7,
+			cur: map[string]json.RawMessage{"deleted": j(`true`), "workflow": j(`1`)},
+			ch:  []Change{{Key: "deleted", Old: j(`true`), New: j(`false`)}}},
 		{name: "regress without reason", actor: delivery,
 			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`)},
 			ch:  []Change{{Key: "stage.development", Old: j(`"pass"`), New: j(`"open"`)}}, status: StatusFailedPrecondition, code: "REASON_REQUIRED"},
@@ -154,11 +179,24 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(Input{Cfg: testCfg(), Actor: tc.actor, EntityTyp: "workflow", EntityID: tc.id,
-				ReasonKey: tc.reason, Note: tc.note, Current: tc.cur, Changes: tc.ch, Env: env})
+			typ := tc.typ
+			if typ == "" {
+				typ = "workflow"
+			}
+			over, err := Validate(Input{Cfg: testCfg(), Actor: tc.actor, EntityTyp: typ, EntityID: tc.id,
+				ReasonKey: tc.reason, Note: tc.note, Current: tc.cur, Changes: tc.ch, Env: env, Evidence: tc.ev})
 			if tc.status == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
+				}
+				if tc.over == "" && len(over) != 0 {
+					t.Fatalf("unexpected override record %s", over[0].New)
+				}
+				if tc.over != "" {
+					want := OverrideKeyPrefix + tc.ch[0].Key
+					if len(over) != 1 || over[0].Key != want || !strings.Contains(string(over[0].New), `"side":"`+tc.over+`"`) || !strings.Contains(string(over[0].New), tc.ev[0]) {
+						t.Fatalf("override record = %+v, want key %s side %s evidence %v", over, want, tc.over, tc.ev)
+					}
 				}
 				return
 			}

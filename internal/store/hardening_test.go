@@ -22,14 +22,16 @@ func filterReason(t *testing.T, filter string) string {
 	return ce.Reason
 }
 
-// AIP-160 and SQL disagree on AND/OR precedence, so a bare mix is refused rather than guessed.
+// There is no implicit AND: two conditions side by side are refused, and so is a bare AND/OR mix
+// (AIP-160 and SQL disagree on precedence), rather than guessed.
 func TestFilterRejectsAmbiguousMix(t *testing.T) {
-	for _, f := range []string{"a=1 AND b=2 OR c=3", "a=1 OR b=2 AND c=3", "a=1 b=2 OR c=3", "(a=1 OR b=2 c=3)", "NOT a=1 OR b=2 AND c=3"} {
+	for _, f := range []string{"a=1 AND b=2 OR c=3", "a=1 OR b=2 AND c=3", "a=1 b=2 OR c=3", "(a=1 OR b=2 c=3)", "NOT a=1 OR b=2 AND c=3",
+		"a=1 b=2", "a=1 (b=2 OR c=3)", "a=1 NOT b=2", "a=1 AND b=2 c=3", "(a=1) (b=2)", "a=1 ANDb=2"} {
 		if r := filterReason(t, f); r != "AMBIGUOUS_FILTER" {
 			t.Errorf("%q: reason %q, want AMBIGUOUS_FILTER", f, r)
 		}
 	}
-	for _, f := range []string{"a=1", "a=1 AND b=2 c=3", "a=1 OR b=2 OR c=3", "(a=1 AND b=2) OR c=3", "a=1 AND (b=2 OR c=3)", "NOT (a=1 OR b=2)"} {
+	for _, f := range []string{"a=1", "a=1 AND b=2 AND c=3", "a=1 OR b=2 OR c=3", "(a=1 AND b=2) OR c=3", "a=1 AND (b=2 OR c=3)", "NOT (a=1 OR b=2)"} {
 		if r := filterReason(t, f); r != "" {
 			t.Errorf("%q: unexpected %q", f, r)
 		}

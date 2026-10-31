@@ -143,12 +143,13 @@ if len(codes) > 14:
 t = lambda i: tcodes[i % len(tcodes)]
 for k in range(0, 12):
     w1, w2 = codes[(k * 3) % len(codes)], codes[(k * 3 + 1) % len(codes)]
-    name = oe("bob", "task", "create", "--name", "adhoc 任务 %d" % k, "--workflow", w1, "--workflow", w2, "--label", "kind=check")["name"]
+    name = oe("bob", "task", "create", "--name", "adhoc 任务 %d" % k, "--workflow", w1, "--label", "kind=check")["name"]
     tk = last(name)
     if k % 4 == 1:
-        oe("bob", "task", "assign", tk, "--workflow", w2, "--membership", "primary")      # primary moves
+        oe("bob", "task", "assign", tk, "--workflow", w2)                                  # moves to another workflow
     if k % 4 == 2:
-        oe("bob", "task", "assign", tk, "--workflow", w1, "--membership", "none")          # detach primary
+        oe("bob", "task", "assign", tk, "--workflow", w2)
+        oe("bob", "task", "assign", tk, "--workflow", w1)                                  # and back
     if k % 4 == 3:
         oe("bob", "task", "delete", tk)
         if k == 3:
@@ -156,15 +157,23 @@ for k in range(0, 12):
 for k in range(6):  # tasks created by the import
     tk = t(k * 7)
     if k == 0:
-        oe("bob", "task", "assign", tk, "--workflow", codes[2], "--membership", "shared")
+        oe("bob", "task", "assign", tk, "--workflow", codes[2])
     elif k == 1:
-        oe("bob", "task", "assign", tk, "--workflow", codes[2], "--membership", "primary")
+        oe("bob", "task", "assign", tk, "--workflow", codes[1])
     elif k == 2:
         oe("bob", "task", "delete", tk)
     elif k == 3:
         oe("bob", "task", "update", tk, "--name", "renamed " + "z" * 150, "--label", "kind=sql", "--assignee", "dev_owner=bob")
     elif k == 4:
-        oe("bob", "task", "assign", tk, "--workflow", codes[0], "--membership", "none")
+        oe("bob", "task", "assign", tk, "--workflow", codes[0])
+# a workflow delete takes its tasks along (one event each); the restore brings back exactly those, not task 0 deleted on its own
+if len(codes) > 8:
+    wdt = oe("bob", "task", "create", "--name", "deleted alone", "--workflow", codes[6])["name"]
+    oe("bob", "task", "delete", last(wdt))
+    oe("alice", "workflow", "delete", codes[6])
+    oe("alice", "workflow", "delete", codes[7])
+    oe("bob", "task", "restore", last(wdt), fail=True)      # PARENT_DELETED
+    oe("alice", "workflow", "restore", codes[6])
 # rejections must not leave traces
 oe("bob", "stage", "advance", codes[4 if len(codes) > 4 else 0], "--stage", "accept", fail=True)  # wrong side + order
 oe("bob", "scope", "set", codes[0], "--to", "out", "--reason", "no_such_reason", fail=True)

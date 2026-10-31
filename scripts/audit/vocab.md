@@ -105,13 +105,13 @@ resolved nor deleted (`notes` and `questions` never change health). Scope defaul
 
 - Job states (`import_batch.state`): `staged`, `applied`, `failed`, `rolled_back` (API `STAGED|APPLIED|FAILED|ROLLED_BACK`).
 - Row classes: `NEW`, `CHANGED`, `UNCHANGED`, `MISSING`, `CONFLICT`, `SUSPECT`; task classes `TASK_NEW|TASK_CHANGED|TASK_UNCHANGED|TASK_MISSING|TASK_CONFLICT`; `INVALID` rows are reported in `row_errors`.
-- Row error reasons (Go `rowErr`): `DUPLICATE_NAME`, `DUPLICATE_PRIMARY`, `DUPLICATE_SOURCE_REFERENCE`, `ENTITY_DELETED`, `INVALID_DISPLAY_NAME`, `INVALID_KEY`, `INVALID_NAME`, `INVALID_ROW`, `INVALID_SOURCE`, `INVALID_STAGE_STATE`, `INVALID_TASK`, `INVALID_VALUE`, `MERGE_CYCLE`, `MERGE_TARGET_INVALID`, `MERGE_TARGET_REQUIRED`, `NO_RULE_FOR_VALUE`, `REASON_REQUIRED`, `SIDE_NOT_ALLOWED`, `STAGE_ORDER_VIOLATION`, `UNKNOWN_REASON`, `UNKNOWN_STAGE`, `UNSUPPORTED_FIELD`, `VALUE_TOO_LONG`.
+- Row error reasons (Go `rowErr`): `DUPLICATE_NAME`, `DUPLICATE_SOURCE_REFERENCE`, `ENTITY_DELETED`, `EVIDENCE_REQUIRED_FOR_OVERRIDE`, `INVALID_DISPLAY_NAME`, `INVALID_KEY`, `INVALID_NAME`, `INVALID_ROW`, `INVALID_SOURCE`, `INVALID_STAGE_STATE`, `INVALID_TASK`, `INVALID_VALUE`, `MERGE_CYCLE`, `MERGE_TARGET_INVALID`, `MERGE_TARGET_REQUIRED`, `NO_RULE_FOR_VALUE`, `PARENT_DELETED`, `REASON_REQUIRED`, `SIDE_NOT_ALLOWED`, `STAGE_ORDER_VIOLATION`, `UNKNOWN_REASON`, `UNKNOWN_STAGE`, `UNSUPPORTED_FIELD`, `VALUE_TOO_LONG`.
 - Diff change kinds: `source`, `fill`, `conflict`. Resolutions: `merge`, `skip`, `link`, `create`.
 
 ## Public views (query surface, from `internal/cli/views.json`)
 
 - `workflows` (One row per live workflow with derived stage and health): `id`, `code`, `project_id`, `name`, `scope`, `attrs`, `assignees`, `merged_into_id`, `create_time`, `current_stage`, `open_issues`, `open_risks`, `health`
-- `tasks` (One row per live task): `id`, `code`, `project_id`, `name`, `attrs`, `assignees`, `create_time`, `primary_workflow_id`
+- `tasks` (One row per live task): `id`, `code`, `project_id`, `name`, `attrs`, `assignees`, `create_time`, `workflow_id`
 - `events` (Audit log: one row per changed key of every event): `event_id`, `project_id`, `entity_id`, `type`, `actor`, `side`, `channel`, `reason_key`, `note`, `corrects_event_id`, `event_time`, `create_time`, `k`, `old_v`, `new_v`
 - `comments` (One row per comment of a live workflow (comments of soft-deleted workflows are hidden)): `id`, `project_id`, `workflow_id`, `kind`, `body`, `resolved`, `deleted`
 - `workflow_stages` (Every stage of every live workflow; no change means open): `workflow_id`, `project_id`, `stage_key`, `seq`, `status`
@@ -134,7 +134,9 @@ resolved nor deleted (`notes` and `questions` never change health). Scope defaul
 | workflow | scope | "in" \| "out" |
 | workflow | into | number (merge target workflow id; used with scope out) |
 | workflow | evidence.<stage> | list of attachment names |
-| task | in.<workflow id> | "primary" \| "shared" \| NULL (detached); at most one primary |
+| task | workflow | <workflow entity id>; exactly one workflow per task (assign moves it) |
+| task | cascade | <event id of the workflow delete>; set with deleted=true when a workflow delete took the task along, cleared by the workflow undelete |
+| workflow, task | override.<changed key> | {"side": reserved side, "evidence": [attachment names]}; an admin acted for the other side (INV-29) |
 | comment | on | number (workflow id) |
 | comment | kind | "note" \| "question" \| "issue" \| "risk" |
 | comment | body | string (immutable) |
@@ -157,9 +159,9 @@ Id prefixes in code: `wf`, `tk`, `cm`, `ev`, `at`.
 | --- | --- | --- |
 | ABORTED | 409 | `ETAG_MISMATCH` |
 | ALREADY_EXISTS | 409 | `IDEMPOTENCY_KEY_REUSED`, `REQUEST_ID_REUSED`, `STORAGE_KEY_REGISTERED` |
-| FAILED_PRECONDITION | 400 | `AGENT_CANNOT_BE_ADMIN`, `ENTITY_DELETED`, `IMPORT_JOB_STATE`, `LAST_ADMIN`, `MERGE_CYCLE`, `NOT_REGRESSIBLE`, `QUERY_TIMEOUT_UNSUPPORTED`, `REASON_REQUIRED`, `ROLLBACK_BLOCKED`, `SHA256_MISMATCH`, `SIZE_MISMATCH`, `STAGE_ORDER_VIOLATION`, `UPLOAD_NOT_FOUND` |
+| FAILED_PRECONDITION | 400 | `AGENT_CANNOT_BE_ADMIN`, `ENTITY_DELETED`, `EVIDENCE_REQUIRED_FOR_OVERRIDE`, `IMPORT_JOB_STATE`, `LAST_ADMIN`, `MERGE_CYCLE`, `NOT_REGRESSIBLE`, `PARENT_DELETED`, `QUERY_TIMEOUT_UNSUPPORTED`, `REASON_REQUIRED`, `REGRESS_LATER_STAGES_PASSED`, `ROLLBACK_BLOCKED`, `SHA256_MISMATCH`, `SIZE_MISMATCH`, `STAGE_ORDER_VIOLATION`, `UPLOAD_NOT_FOUND` |
 | INTERNAL | 500 | `INTERNAL` |
-| INVALID_ARGUMENT | 400 | `AMBIGUOUS_FILTER`, `AS_OF_UNSUPPORTED`, `CLIENT_ID_UNSUPPORTED`, `DUPLICATE_PRIMARY`, `EVENT_TIME_IN_FUTURE`, `FILE_TOO_LARGE`, `INVALID_ACCOUNT`, `INVALID_ARGUMENT`, `INVALID_AS_OF`, `INVALID_BODY`, `INVALID_DISPLAY_NAME`, `INVALID_EVIDENCE`, `INVALID_EXPIRE_TIME`, `INVALID_FILENAME`, `INVALID_FILTER`, `INVALID_KEY`, `INVALID_KIND`, `INVALID_MEMBERSHIP`, `INVALID_MERGED_INTO`, `INVALID_ORDER_BY`, `INVALID_PAGE_SIZE`, `INVALID_PAGE_TOKEN`, `INVALID_PROJECT_ID`, `INVALID_QUERY`, `INVALID_REASON`, `INVALID_REQUEST_ID`, `INVALID_RESOLUTION`, `INVALID_ROLE`, `INVALID_RULE`, `INVALID_SCOPE`, `INVALID_SETTING`, `INVALID_SHA256`, `INVALID_SIDE`, `INVALID_SIZE`, `INVALID_SOURCE`, `INVALID_STAGE`, `INVALID_STAGE_STATE`, `INVALID_STORAGE_KEY`, `INVALID_UPDATE_MASK`, `INVALID_VALUE`, `INVALID_WORKFLOW`, `MERGE_TARGET_INVALID`, `MERGE_TARGET_REQUIRED`, `METHOD_NOT_ALLOWED`, `MULTIPLE_PRIMARY`, `NO_ROWS`, `NO_RULE_FOR_VALUE`, `QUERY_FAILED`, `RESULT_TOO_LARGE`, `RULES_EMPTY`, `UNKNOWN_REASON`, `UNKNOWN_STAGE`, `VALUE_TOO_LONG`, `WORKFLOW_NOT_FOUND` |
+| INVALID_ARGUMENT | 400 | `AMBIGUOUS_FILTER`, `AS_OF_UNSUPPORTED`, `CLIENT_ID_UNSUPPORTED`, `EVENT_TIME_IN_FUTURE`, `FILE_TOO_LARGE`, `INVALID_ACCOUNT`, `INVALID_ARGUMENT`, `INVALID_AS_OF`, `INVALID_BODY`, `INVALID_DISPLAY_NAME`, `INVALID_EVIDENCE`, `INVALID_EXPIRE_TIME`, `INVALID_FILENAME`, `INVALID_FILTER`, `INVALID_KEY`, `INVALID_KIND`, `INVALID_MERGED_INTO`, `INVALID_ORDER_BY`, `INVALID_PAGE_SIZE`, `INVALID_PAGE_TOKEN`, `INVALID_PROJECT_ID`, `INVALID_QUERY`, `INVALID_REASON`, `INVALID_REQUEST_ID`, `INVALID_RESOLUTION`, `INVALID_ROLE`, `INVALID_RULE`, `INVALID_SCOPE`, `INVALID_SETTING`, `INVALID_SHA256`, `INVALID_SIDE`, `INVALID_SIZE`, `INVALID_SOURCE`, `INVALID_STAGE`, `INVALID_STAGE_STATE`, `INVALID_STORAGE_KEY`, `INVALID_UPDATE_MASK`, `INVALID_VALUE`, `INVALID_WORKFLOW`, `MERGE_TARGET_INVALID`, `MERGE_TARGET_REQUIRED`, `METHOD_NOT_ALLOWED`, `NO_ROWS`, `NO_RULE_FOR_VALUE`, `QUERY_FAILED`, `RESULT_TOO_LARGE`, `RULES_EMPTY`, `UNKNOWN_REASON`, `UNKNOWN_STAGE`, `VALUE_TOO_LONG`, `WORKFLOW_NOT_FOUND` |
 | NOT_FOUND | 404 | `NOT_FOUND` |
 | PERMISSION_DENIED | 403 | `ACCOUNT_IN_OTHER_PROJECT`, `GLOBAL_CONFIG_SHARED`, `NOT_A_MEMBER`, `ROLE_INSUFFICIENT`, `SIDE_NOT_ALLOWED` |
 | RESOURCE_EXHAUSTED | 429 | `PROJECT_STORAGE_QUOTA_EXCEEDED`, `QUERY_SERVER_BUSY`, `QUERY_TOO_MANY_CONCURRENT`, `TOO_MANY_PENDING_UPLOADS` |

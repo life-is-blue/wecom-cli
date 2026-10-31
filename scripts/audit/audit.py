@@ -1078,7 +1078,7 @@ def section_vocab_docs():
             k = m.group(1)
             if f.startswith(EXTERNAL_VOCAB_DOCS) or "..." in k:
                 continue
-            ok = bool(re.match(r"^(stage\.(%s|%%)|scope|name|deleted|into|on|kind|body|resolved|attr\.|assignee\.|ann\.|in\.|source\.|assignee\.\w+|attr\.\w+)" % "|".join(STAGE_KEYS), k))
+            ok = bool(re.match(r"^(stage\.(%s|%%)|scope|name|deleted|into|on|kind|body|resolved|attr\.|assignee\.|ann\.|workflow|cascade|evidence\.|override\.|source\.|assignee\.\w+|attr\.\w+)" % "|".join(STAGE_KEYS), k))
             A.check(area, "%s:%d event key '%s' is a known key shape" % (f, lineno(text, m.start()), k), ok)
     # --- numeric claims
     cap = 104857600
@@ -1559,7 +1559,9 @@ def render_vocab(nodes):
         ("workflow", "scope", "\"in\" | \"out\""),
         ("workflow", "into", "number (merge target workflow id; used with scope out)"),
         ("workflow", "evidence.<stage>", "list of attachment names"),
-        ("task", "in.<workflow id>", "\"primary\" | \"shared\" | NULL (detached); at most one primary"),
+        ("task", "workflow", "<workflow entity id>; exactly one workflow per task (assign moves it)"),
+        ("task", "cascade", "<event id of the workflow delete>; set with deleted=true when a workflow delete took the task along, cleared by the workflow undelete"),
+        ("workflow, task", "override.<changed key>", "{\"side\": reserved side, \"evidence\": [attachment names]}; an admin acted for the other side (INV-29)"),
         ("comment", "on", "number (workflow id)"),
         ("comment", "kind", "\"note\" | \"question\" | \"issue\" | \"risk\""),
         ("comment", "body", "string (immutable)"),

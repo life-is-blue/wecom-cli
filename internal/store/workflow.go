@@ -179,6 +179,16 @@ func (s *Store) WorkflowExists(ctx context.Context, p Project, id int64) (bool, 
 	return !e.deleted(), nil
 }
 
+// WorkflowKnown reports whether the workflow exists in the project, deleted or not.
+func (s *Store) WorkflowKnown(ctx context.Context, p Project, id int64) (bool, error) {
+	_, err := loadEntity(ctx, s.DB, p.ID, "workflow", id)
+	var ce *core.Error
+	if asCore(err, &ce) && ce.Status == core.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, internalErr(err)
+}
+
 func (s *Store) renderWorkflows(ctx context.Context, p Project, ents map[int64]*Entity, order []int64) ([]api.Workflow, error) {
 	cfg, err := s.LoadConfig(ctx)
 	if err != nil {

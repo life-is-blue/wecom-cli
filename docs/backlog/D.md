@@ -37,7 +37,7 @@ Evidence lines are rerunnable with `python3 scripts/audit/audit.py` unless state
    Fix: add `HAVING SUM(kind IN ('issue','risk','question')) > 0`, or describe the view as "workflows with any open comment".
 
 7. **`tasks.primary_workflow_id` is arbitrary with two primaries** (S)
-   **Fixed (migration 0006, INV-27): `MIN(...)` over the primary links, and the write path refuses a second primary (`DUPLICATE_PRIMARY`, a move is allowed). The importer only links new tasks, so it cannot add one.**
+   **Superseded (migration 0007, INV-27): a task has exactly one workflow (key `workflow`, view column `tasks.workflow_id`); there are no links and no primary flag any more.**
    Evidence: dataset (b), task 490 has `in.486 = in.487 = primary`; the subselect uses `LIMIT 1` without `ORDER BY`.
    Fix: `ORDER BY CAST(SUBSTRING(k, 4) AS UNSIGNED) LIMIT 1`, and make import and legacy writers reject or normalise a second primary.
 

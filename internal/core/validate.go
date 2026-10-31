@@ -32,16 +32,25 @@ type Input struct {
 	Current   map[string]json.RawMessage // latest values before this event
 	Changes   []Change                   // Old/New filled in, no-ops removed
 	Env       Env
+	// Evidence are the validated attachment names the request carries. An admin may set a key that a
+	// rule reserves for the other side only with evidence (INV-29).
+	Evidence []string
 }
 
-// Validate applies the built-in checks and the rule table to a proposed event.
+// OverrideKeyPrefix starts the key of the record an admin override leaves on the event:
+// override.<changed key> = {"side": <side the rule reserved>, "evidence": [<attachment names>]}.
+const OverrideKeyPrefix = "override."
+
+// Validate applies the built-in checks and the rule table to a proposed event. It returns the
+// override records the event must carry (one per change an admin made for the other side); the
+// caller appends them to the event unconditionally.
 // Events with channel legacy/import are historical facts and are never rejected.
-func Validate(in Input) error {
+func Validate(in Input) ([]Change, error) {
 	if in.Actor.Channel == ChannelLegacy || in.Actor.Channel == ChannelImport {
-		return nil
+		return nil, nil
 	}
 	if err := checkLive(in); err != nil {
-		return err
+		return nil, err
 	}
 	var reason *Reason
 	if in.ReasonKey != "" {
@@ -54,12 +63,12 @@ func Validate(in Input) error {
 				}
 			}
 			sort.Strings(keys)
-			return NewError(StatusInvalidArgument, "UNKNOWN_REASON", "reason %q is not defined or not active; valid reasons: %s", in.ReasonKey, strings.Join(keys, ", ")).
+			return nil, NewError(StatusInvalidArgument, "UNKNOWN_REASON", "reason %q is not defined or not active; valid reasons: %s", in.ReasonKey, strings.Join(keys, ", ")).
 				With("valid_reasons", strings.Join(keys, ","))
 		}
 		reason = &r
 		if r.NoteRequired && strings.TrimSpace(in.Note) == "" {
-			return NewError(StatusFailedPrecondition, "REASON_REQUIRED", "reason %q requires a note", in.ReasonKey).With("reason", in.ReasonKey)
+			return nil, NewError(StatusFailedPrecondition, "REASON_REQUIRED", "reason %q requires a note", in.ReasonKey).With("reason", in.ReasonKey)
 		}
 	}
 
@@ -76,18 +85,22 @@ func Validate(in Input) error {
 		}
 	}
 
-	if err := checkPrimary(in, after); err != nil {
-		return err
-	}
+	var overrides []Change
 	for _, c := range in.Changes {
 		if err := builtin(in, c, after, reason); err != nil {
-			return err
+			return nil, err
 		}
-		if err := checkRules(in, c, reason); err != nil {
-			return err
+		side, err := checkRules(in, c, reason)
+		if err != nil {
+			return nil, err
+		}
+		if side != "" {
+			rec, _ := json.Marshal(map[string]any{"side": side, "evidence": in.Evidence})
+			k := OverrideKeyPrefix + c.Key
+			overrides = append(overrides, Change{Key: k, Old: in.Current[k], New: rec})
 		}
 	}
-	return nil
+	return overrides, nil
 }
 
 // checkLive refuses every change to a soft-deleted entity except the one that restores it, and every
@@ -99,7 +112,7 @@ func checkLive(in Input) error {
 	if Bool(in.Current["deleted"]) {
 		for _, c := range in.Changes {
 			if c.Key == "deleted" && !Bool(c.New) {
-				return nil // undelete
+				return checkParentLive(in) // undelete
 			}
 		}
 		return NewError(StatusFailedPrecondition, "ENTITY_DELETED", "the %s is deleted; only undelete is allowed", in.EntityTyp).With("entity", in.EntityTyp)
@@ -119,30 +132,22 @@ func checkLive(in Input) error {
 	return nil
 }
 
-// checkPrimary keeps at most one primary workflow link (in.<id> = primary) per task. A change set that
-// makes a link primary while another one stays primary is refused; moving the primary (new one primary,
-// old one demoted in the same change set) is fine.
-func checkPrimary(in Input, after map[string]json.RawMessage) error {
-	if in.EntityTyp != "task" {
+// checkParentLive refuses to restore a task whose workflow is deleted (the workflow's own undelete
+// restores the tasks its delete took along).
+func checkParentLive(in Input) error {
+	if in.EntityTyp != "task" || in.Env == nil {
 		return nil
 	}
-	adds := false
-	for _, c := range in.Changes {
-		if strings.HasPrefix(c.Key, "in.") && Scalar(c.New) == "primary" && Scalar(c.Old) != "primary" {
-			adds = true
-		}
-	}
-	if !adds {
+	var wf int64
+	if json.Unmarshal(in.Current["workflow"], &wf) != nil || wf == 0 {
 		return nil
 	}
-	n := 0
-	for k, v := range after {
-		if strings.HasPrefix(k, "in.") && Scalar(v) == "primary" {
-			n++
-		}
+	ok, err := in.Env.WorkflowExists(wf)
+	if err != nil {
+		return err
 	}
-	if n > 1 {
-		return NewError(StatusInvalidArgument, "DUPLICATE_PRIMARY", "a task has at most one primary workflow; demote the current one in the same change")
+	if !ok {
+		return NewError(StatusFailedPrecondition, "PARENT_DELETED", "the workflow of this task is deleted; undelete the workflow first").With("entity", "workflow")
 	}
 	return nil
 }
@@ -186,6 +191,20 @@ func builtin(in Input, c Change, after map[string]json.RawMessage, reason *Reaso
 			return NewError(StatusInvalidArgument, "INVALID_VALUE", "stage %q cannot be cleared", key)
 		default:
 			return NewError(StatusInvalidArgument, "INVALID_VALUE", "invalid state %q for stage %q", nv, key)
+		}
+	case c.Key == "workflow" && in.EntityTyp == "task":
+		var wf int64
+		if json.Unmarshal(c.New, &wf) != nil || wf <= 0 {
+			return NewError(StatusInvalidArgument, "INVALID_VALUE", "invalid workflow")
+		}
+		if in.Env != nil {
+			ok, err := in.Env.WorkflowExists(wf)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return NewError(StatusFailedPrecondition, "ENTITY_DELETED", "the workflow is deleted; a task cannot be placed in it").With("entity", "workflow")
+			}
 		}
 	case c.Key == "into":
 		if len(c.New) > 0 && string(c.New) != "null" {
@@ -252,7 +271,9 @@ func checkMerge(in Input, after map[string]json.RawMessage) error {
 
 // checkRules implements the rule-table semantics: a key matching any k_pattern must satisfy
 // one matching rule (value, side, reason kind); keys matching no rule are free for editors.
-func checkRules(in Input, c Change, reason *Reason) error {
+// An admin whose side no rule allows may still make the change with evidence (the override): the
+// returned string is then the side(s) the rule reserved, "" otherwise.
+func checkRules(in Input, c Change, reason *Reason) (string, error) {
 	var byKey, byValue []Rule
 	for _, r := range in.Cfg.Rules {
 		if RuleMatch(r.KPattern, c.Key) {
@@ -260,7 +281,7 @@ func checkRules(in Input, c Change, reason *Reason) error {
 		}
 	}
 	if len(byKey) == 0 {
-		return nil
+		return "", nil
 	}
 	nv := Scalar(c.New)
 	for _, r := range byKey {
@@ -269,21 +290,40 @@ func checkRules(in Input, c Change, reason *Reason) error {
 		}
 	}
 	if len(byValue) == 0 {
-		return NewError(StatusInvalidArgument, "NO_RULE_FOR_VALUE", "no rule allows setting %s to %q", c.Key, nv)
+		return "", NewError(StatusInvalidArgument, "NO_RULE_FOR_VALUE", "no rule allows setting %s to %q", c.Key, nv)
 	}
 	var bySide []Rule
 	for _, r := range byValue {
-		if r.Side == SideAny || r.Side == in.Actor.Side || in.Actor.Role == RoleAdmin {
+		if r.Side == SideAny || r.Side == in.Actor.Side {
 			bySide = append(bySide, r)
 		}
 	}
+	override := ""
 	if len(bySide) == 0 {
-		return NewError(StatusPermissionDenied, "SIDE_NOT_ALLOWED", "side %q may not set %s to %q", in.Actor.Side, c.Key, nv).
-			With("key", c.Key).With("side", in.Actor.Side)
+		if in.Actor.Role != RoleAdmin {
+			return "", NewError(StatusPermissionDenied, "SIDE_NOT_ALLOWED", "side %q may not set %s to %q", in.Actor.Side, c.Key, nv).
+				With("key", c.Key).With("side", in.Actor.Side)
+		}
+		sides := map[string]bool{}
+		for _, r := range byValue {
+			sides[r.Side] = true
+		}
+		var names []string
+		for s := range sides {
+			names = append(names, s)
+		}
+		sort.Strings(names)
+		override = strings.Join(names, ",")
+		if len(in.Evidence) == 0 {
+			return "", NewError(StatusFailedPrecondition, "EVIDENCE_REQUIRED_FOR_OVERRIDE",
+				"setting %s to %q is reserved for side %s; an admin of side %q may do it for them only with evidence: attach the proof to the workflow first (comment add --attach) and pass its name in evidence_attachments (CLI --evidence)",
+				c.Key, nv, override, in.Actor.Side).With("key", c.Key).With("side", override)
+		}
+		bySide = byValue
 	}
 	for _, r := range bySide {
 		if r.ReasonKind == nil || (reason != nil && reason.Kind == *r.ReasonKind) {
-			return nil
+			return override, nil
 		}
 	}
 	// no rule satisfied: report the first required kind
@@ -293,6 +333,6 @@ func checkRules(in Input, c Change, reason *Reason) error {
 			kinds = append(kinds, *r.ReasonKind)
 		}
 	}
-	return NewError(StatusFailedPrecondition, "REASON_REQUIRED", "changing %s to %q requires a reason of kind %s", c.Key, nv, strings.Join(kinds, " or ")).
+	return "", NewError(StatusFailedPrecondition, "REASON_REQUIRED", "changing %s to %q requires a reason of kind %s", c.Key, nv, strings.Join(kinds, " or ")).
 		With("key", c.Key).With("required_kind", strings.Join(kinds, ","))
 }

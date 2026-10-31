@@ -1,7 +1,6 @@
 package server
 
 import (
-	"strconv"
 	"strings"
 
 	"github.com/life-is-blue/openetl-cli/internal/api"
@@ -37,14 +36,15 @@ func (s *Server) taskResult(q *request, res *store.Result) error {
 	return s.respond(q, s.Store.PreviewTask(q.pr.project(), res.After))
 }
 
-// requireWorkflow checks that the referenced workflow exists and is not deleted.
+// requireWorkflow checks that the referenced workflow exists (a deleted one is refused later, by
+// core.Validate, with ENTITY_DELETED).
 func (s *Server) requireWorkflow(q *request, ref string) (int64, error) {
 	p := q.pr.project()
 	id, ok := p.ParseWorkflowRef(ref)
 	if !ok {
 		return 0, invalid("INVALID_WORKFLOW", "%q is not a workflow resource name", ref)
 	}
-	exists, err := s.Store.WorkflowExists(q.r.Context(), p, id)
+	exists, err := s.Store.WorkflowKnown(q.r.Context(), p, id)
 	if err != nil {
 		return 0, err
 	}
@@ -69,41 +69,16 @@ func (s *Server) createTask(q *request) error {
 	if strings.TrimSpace(body.DisplayName) == "" {
 		return invalid("INVALID_DISPLAY_NAME", "display_name is required")
 	}
-	type member struct {
-		wf      int64
-		primary bool
-	}
-	var members []member
-	primaries := 0
-	if body.Workflows != nil {
-		for _, m := range *body.Workflows {
-			id, err := s.requireWorkflow(q, m.Workflow)
-			if err != nil {
-				return err
-			}
-			pr := m.Primary != nil && *m.Primary
-			if pr {
-				primaries++
-			}
-			members = append(members, member{id, pr})
-		}
-	}
-	if primaries > 1 {
-		return invalid("MULTIPLE_PRIMARY", "a task has at most one primary workflow")
+	wf, err := s.requireWorkflow(q, body.Workflow)
+	if err != nil {
+		return err
 	}
 	plan := func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
 		ch, err := profileChanges(&body.DisplayName, body.Labels, body.Annotations, body.Assignees, body.Source, nil, false)
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range members {
-			v := "shared"
-			if m.primary {
-				v = "primary"
-			}
-			ch = append(ch, store.PlannedChange{Key: "in." + strconv.FormatInt(m.wf, 10), New: strRaw(v)})
-		}
-		return ch, nil
+		return append(ch, store.PlannedChange{Key: "workflow", New: core.JSON(wf)}), nil
 	}
 	res, err := s.apply(q, "task", 0, o, plan, timeZero)
 	if err != nil {
@@ -165,40 +140,12 @@ func (s *Server) assignTask(q *request, id int64) error {
 	if err != nil {
 		return err
 	}
-	var wf int64
-	if body.Membership == "NONE" {
-		var ok bool
-		if wf, ok = q.pr.project().ParseWorkflowRef(body.Workflow); !ok {
-			return invalid("INVALID_WORKFLOW", "%q is not a workflow resource name", body.Workflow)
-		}
-	} else {
-		if wf, err = s.requireWorkflow(q, body.Workflow); err != nil {
-			return err
-		}
+	wf, err := s.requireWorkflow(q, body.Workflow)
+	if err != nil {
+		return err
 	}
-	key := "in." + strconv.FormatInt(wf, 10)
-	var plan func(*store.Entity, core.Env) ([]store.PlannedChange, error)
-	switch body.Membership {
-	case "PRIMARY":
-		plan = func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
-			out := []store.PlannedChange{{Key: key, New: strRaw("primary")}}
-			for k, v := range cur.Vals { // at most one primary: demote the others
-				if strings.HasPrefix(k, "in.") && k != key && core.Scalar(v) == "primary" {
-					out = append(out, store.PlannedChange{Key: k, New: strRaw("shared")})
-				}
-			}
-			return out, nil
-		}
-	case "SHARED":
-		plan = func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
-			return []store.PlannedChange{{Key: key, New: strRaw("shared")}}, nil
-		}
-	case "NONE":
-		plan = func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
-			return []store.PlannedChange{{Key: key}}, nil
-		}
-	default:
-		return invalid("INVALID_MEMBERSHIP", "membership must be PRIMARY, SHARED or NONE")
+	plan := func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
+		return []store.PlannedChange{{Key: "workflow", New: core.JSON(wf)}}, nil
 	}
 	res, err := s.apply(q, "task", id, o, plan, timeZero)
 	if err != nil {

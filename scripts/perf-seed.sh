@@ -4,7 +4,7 @@
 # Creates (dropping any previous copy!) database $PERF_DB, applies migrations 0001..$PERF_MAX_MIGRATION
 # (default 3, i.e. the schema BEFORE entity_latest; run `openetl-server migrate` afterwards to get the
 # new schema, which backfills entity_latest from delta), then inserts project `perf` with
-#   PERF_WORKFLOWS (3000) workflows, PERF_TASKS (10000) tasks linked via in.<workflow> keys,
+#   PERF_WORKFLOWS (3000) workflows, PERF_TASKS (10000) tasks placed by the `workflow` key,
 #   ~2 comments per workflow and stage advances for ~60% of the workflows.
 # The rows are written with plain SQL but have exactly the shape Apply produces (one create event per
 # entity, one event per stage advance, one delta per key). Connection: PERF_MYSQL (default below).
@@ -65,7 +65,7 @@ for i in range(W):
 for i in range(T):
     t = entity("task"); n = event(t)
     delta(n, t, "name", f"task_{i:05d}"); delta(n, t, "attr.kind", "sql")
-    delta(n, t, "in." + str(random.choice(wfs)), "primary")
+    delta(n, t, "workflow", int(random.choice(wfs)))
 def flush(table, cols, rows):
     for i in range(0, len(rows), 1000):
         print(f"INSERT INTO {table}({cols}) VALUES " + ",".join(rows[i:i+1000]) + ";")

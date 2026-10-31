@@ -52,7 +52,7 @@ and will drift.
 | G8 | 154 etags | `etag` string, `ABORTED` on mismatch | Verified |
 | G9 | 155 request IDs | `request_id`, idempotency, duplicate returns previous response | Verified |
 | G10 | 158 pagination | `page_size`, `page_token`, opacity, parameter matching, expiry | Verified |
-| G11 | 160 filtering | Operators, `:`; OR binds tighter than AND; implicit AND; `INVALID_ARGUMENT`. The EBNF file `/assets/misc/ebnf-filtering.txt` was **not** read | Verified (grammar file unread) |
+| G11 | 160 filtering | Operators, `:`; OR binds tighter than AND; implicit AND (not adopted: openetl refuses a bare juxtaposition, `AMBIGUOUS_FILTER`, INV-25); `INVALID_ARGUMENT`. The EBNF file `/assets/misc/ebnf-filtering.txt` was **not** read | Verified (grammar file unread) |
 | G12 | 164 soft delete | `delete_time`, `purge_time`, `Undelete`, `show_deleted` | Verified |
 | G13 | 193 errors | `error{code,message,status,details}`, JSON `code` is HTTP status, ErrorInfo reason regex | Verified |
 | G14 | https://raw.githubusercontent.com/googleapis/googleapis/master/google/rpc/error_details.proto | `ErrorInfo.reason/domain/metadata` rules, `RetryInfo` | Verified |

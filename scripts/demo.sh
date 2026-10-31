@@ -40,7 +40,8 @@ expect_fail STAGE_ORDER_VIOLATION as_dev stage advance "$WF" --stage verify
 as_dev stage advance "$WF" --stage development >/dev/null && as_dev stage advance "$WF" --stage deployment >/dev/null && as_dev stage advance "$WF" --stage verify --note "row counts match" >/dev/null && echo "  development, deployment, verify passed"
 
 say "3. only the customer side can accept"
-expect_fail SIDE_NOT_ALLOWED as_edt stage advance "$WF" --stage accept   # admins may act for any side by design; editors may not
+expect_fail SIDE_NOT_ALLOWED as_edt stage advance "$WF" --stage accept   # editors may not; an admin of the other side needs evidence (INV-29)
+expect_fail EVIDENCE_REQUIRED_FOR_OVERRIDE as_dev stage advance "$WF" --stage accept
 as_cus stage advance "$WF" --stage accept >/dev/null && echo "  customer accepted"
 
 say "4. regress needs a reason"

@@ -20,7 +20,8 @@ type filterParser struct {
 	resolve resolver
 }
 
-// compileFilter parses an AIP-160 subset: restrictions joined by AND / OR (implicit AND), NOT, -, parentheses.
+// compileFilter parses an AIP-160 subset: restrictions joined by an explicit AND or OR, NOT, -, parentheses.
+// Two restrictions side by side without an operator are refused (AMBIGUOUS_FILTER), never read as an implicit AND.
 func compileFilter(filter string, r resolver) (string, []any, error) {
 	if strings.TrimSpace(filter) == "" {
 		return "", nil, nil
@@ -72,7 +73,7 @@ func (p *filterParser) parseOr() (string, []any, error) {
 	}
 	if ors > 0 && anded {
 		return "", nil, core.NewError(core.StatusInvalidArgument, "AMBIGUOUS_FILTER",
-			"the filter mixes AND (or implicit AND) with OR without parentheses; add parentheses, e.g. (a AND b) OR c")
+			"the filter mixes AND with OR without parentheses; add parentheses, e.g. (a AND b) OR c")
 	}
 	return l, la, nil
 }
@@ -85,14 +86,15 @@ func (p *filterParser) parseAnd() (string, []any, bool, error) {
 	anded := false
 	for {
 		w := p.peekWord()
-		if w == "" || w == ")" || strings.EqualFold(w, "OR") {
+		if w == "" && (p.i >= len(p.s) || p.s[p.i] == ')') || strings.EqualFold(w, "OR") {
 			return l, la, anded, nil
 		}
-		anded = true
-		if strings.EqualFold(w, "AND") {
-			p.skipWS()
-			p.i += 3
+		if !strings.EqualFold(w, "AND") {
+			return "", nil, false, core.NewError(core.StatusInvalidArgument, "AMBIGUOUS_FILTER",
+				"two conditions need an explicit operator at position %d: write AND (or OR) between them, e.g. a = 1 AND b = 2", p.i)
 		}
+		anded = true
+		p.i += 3
 		r, ra, err := p.parseUnary()
 		if err != nil {
 			return "", nil, false, err

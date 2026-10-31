@@ -105,42 +105,54 @@ func TestViewsHideDeletedWorkflows(t *testing.T) {
 	}
 }
 
-// tasks.primary_workflow_id is the lowest primary workflow id; the write path refuses a second primary
-// unless the same change demotes the first (a move).
-func TestTaskPrimaryDeterministicAndUnique(t *testing.T) {
+// task creates a task of the workflow (the value of the key `workflow` is the workflow's entity id).
+func (e *env) task(t *testing.T, wf int64, name string) int64 {
+	t.Helper()
+	r, err := e.st.Apply(e.ctx, ChangeRequest{ProjectID: e.p.ID, EntityType: "task", Actor: e.actor("delivery", "editor"),
+		Plan: func(*Entity, core.Env) ([]PlannedChange, error) {
+			return []PlannedChange{{Key: "name", New: core.JSON(name)}, {Key: "workflow", New: core.JSON(wf)}}, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.EntityID
+}
+
+// tasks.workflow_id is the workflow the task belongs to; moving the task changes it, and a task cannot be placed in a
+// deleted or a non-numeric workflow.
+func TestTaskWorkflowView(t *testing.T) {
 	e := newEnv(t)
 	a, b := e.createWF(t, "a"), e.createWF(t, "b")
-	tk := e.write(t, "task", 0, e.actor("delivery", "editor"), "name", "t", fmt.Sprintf("in.%d", b), "primary").EntityID
-	pw := func() sql.NullInt64 {
+	tk := e.task(t, b, "t")
+	wid := func() sql.NullInt64 {
 		var n sql.NullInt64
-		if err := e.st.DB.QueryRowContext(e.ctx, "SELECT primary_workflow_id FROM tasks WHERE id = ?", tk).Scan(&n); err != nil {
+		if err := e.st.DB.QueryRowContext(e.ctx, "SELECT workflow_id FROM tasks WHERE id = ?", tk).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
-	if pw().Int64 != b {
-		t.Fatalf("primary %v, want %d", pw(), b)
+	if wid().Int64 != b {
+		t.Fatalf("workflow_id %v, want %d", wid(), b)
 	}
-	// a second primary through the normal channel is refused
-	_, err := e.st.Apply(e.ctx, ChangeRequest{ProjectID: e.p.ID, EntityType: "task", EntityID: tk, Actor: e.actor("delivery", "editor"), Plan: set(fmt.Sprintf("in.%d", a), "primary")})
-	coreErr(t, err, core.StatusInvalidArgument, "DUPLICATE_PRIMARY")
-	if pw().Int64 != b {
-		t.Fatal("refused write changed the task")
+	move := func(wf int64) error {
+		_, err := e.st.Apply(e.ctx, ChangeRequest{ProjectID: e.p.ID, EntityType: "task", EntityID: tk, Actor: e.actor("delivery", "editor"),
+			Plan: func(*Entity, core.Env) ([]PlannedChange, error) {
+				return []PlannedChange{{Key: "workflow", New: core.JSON(wf)}}, nil
+			}})
+		return err
 	}
-	// moving the primary (new primary, old one demoted in the same change set) is allowed
-	e.write(t, "task", tk, e.actor("delivery", "editor"), fmt.Sprintf("in.%d", a), "primary", fmt.Sprintf("in.%d", b), "shared")
-	if pw().Int64 != a {
-		t.Fatalf("after the move: %v, want %d", pw(), a)
+	if err := move(a); err != nil || wid().Int64 != a {
+		t.Fatalf("after the move: %v %v, want %d", wid(), err, a)
 	}
-	// historical data (legacy channel) may hold two primaries: the view picks the lowest id, always
-	e.write(t, "task", tk, core.Actor{Account: "x", Side: "system", Role: "editor", Channel: core.ChannelLegacy}, fmt.Sprintf("in.%d", b), "primary")
-	for i := 0; i < 5; i++ {
-		if pw().Int64 != min(a, b) {
-			t.Fatalf("two primaries: %v, want the lowest id %d", pw(), min(a, b))
-		}
+	if err := e.del(t, "workflow", b, true); err != nil {
+		t.Fatal(err)
 	}
-	// an unrelated edit of a task that already has two primaries is not blocked
-	e.write(t, "task", tk, e.actor("delivery", "editor"), "name", "renamed")
+	coreErr(t, move(b), core.StatusFailedPrecondition, "ENTITY_DELETED")
+	if wid().Int64 != a {
+		t.Fatal("refused move changed the task")
+	}
+	_, err := e.st.Apply(e.ctx, ChangeRequest{ProjectID: e.p.ID, EntityType: "task", EntityID: tk, Actor: e.actor("delivery", "editor"), Plan: set("workflow", "5")})
+	coreErr(t, err, core.StatusInvalidArgument, "INVALID_VALUE")
 }
 
 // A-4: a soft-deleted workflow or task accepts nothing but its restore; a comment of a deleted workflow is read-only.
@@ -196,7 +208,7 @@ func TestViewsAreCollationSafe(t *testing.T) {
 	e := newEnv(t)
 	wf := e.createWF(t, "w")
 	e.comment(t, wf, "issue")
-	e.write(t, "task", 0, e.actor("delivery", "editor"), "name", "t", fmt.Sprintf("in.%d", wf), "primary")
+	e.task(t, wf, "t")
 
 	cols := map[string][]string{}
 	rows, err := e.st.DB.QueryContext(e.ctx, `SELECT table_name, column_name FROM information_schema.columns

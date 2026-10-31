@@ -14,7 +14,7 @@ resolve / reopen / delete, scope in|out with a merge target `into`.  The old sam
 one has ~330 workflows and ~1000 tasks, built from a bulk part (random histories) and ~35 hand-written awkward cases.
 
 Key vocabulary written (see scripts/audit/vocab.md): name, scope, into, deleted, stage.<k>, attr.<k>, ann.<k>,
-assignee.<role>, source.system|ref|hash (workflows/tasks); in.<workflow-id> = primary|shared (tasks);
+assignee.<role>, source.system|ref|hash (workflows/tasks); workflow = <workflow entity id> (tasks: exactly one);
 on, kind, body, resolved, deleted (comments).  Removing a key writes new_v NULL.
 """
 import argparse
@@ -134,11 +134,11 @@ class Gen:
         self.stat("comments")
         return c
 
-    def task(self, name, links=None, labels=None, assignees=None, source=None, project=1, **kw):
+    def task(self, name, wf=None, labels=None, assignees=None, source=None, project=1, **kw):
         t = self.entity("task", project)
         ch = {"name": name}
-        for w, m in (links or {}).items():
-            ch["in.%d" % w] = m
+        if wf is not None:
+            ch["workflow"] = wf
         for k, v in (labels or {}).items():
             ch["attr." + k] = v
         for k, v in (assignees or {}).items():
@@ -194,7 +194,7 @@ for i in range(120):
     if R.random() < 0.15:
         G.event(w, {"stage.verify": "open"}, actor="carol", side="customer", reason="rej_row_count")
     for j in range(max(0, min(18, int(R.expovariate(1 / 2.2))))) if R.random() > 0.08 else []:
-        G.task("%s_t%d" % (labels["domain"], j), {w: "primary"}, {"kind": R.choice(["table", "script", "check"]), "line": str(2 + i * 20 + j)})
+        G.task("%s_t%d" % (labels["domain"], j), w, {"kind": R.choice(["table", "script", "check"]), "line": str(2 + i * 20 + j)})
     for _ in range(R.choice([0, 0, 0, 1, 2, 4])):
         kind = R.choice(["note", "question", "issue", "risk", "issue"])
         r = R.random()
@@ -206,7 +206,7 @@ for i in range(120):
 # 1. workflow with 0 tasks and one with exactly 40 tasks, plus tasks shared by several workflows
 w0 = G.workflow("zero tasks", {"domain": "dwh"})
 w40 = G.workflow("forty tasks", {"domain": "fin"})
-t40 = [G.task("t%02d" % k, {w40: "primary"}) for k in range(40)]
+t40 = [G.task("t%02d" % k, w40) for k in range(40)]
 G.stat("tasks_in_40_workflow", 40)
 
 # 2. unicode and long names, hostile characters
@@ -216,7 +216,7 @@ names = ["数据仓库_订单_日加载", "ñandú 🚀 emoji 🧪 ZWJ 👨‍�
 uni = [G.workflow(n, {"domain": "dwh"}) for n in names]
 G.stat("unicode_or_long_names", len(names))
 # very long names for tasks too
-G.task("task " + "ä" * 2000, {uni[0]: "primary"})
+G.task("task " + "ä" * 2000, uni[0])
 
 # 3. duplicate display names (also across a soft-deleted twin)
 dups = [G.workflow("duplicate name", {"domain": "hr", "priority": p}) for p in ("a1", "a2", "b1")]
@@ -234,20 +234,24 @@ ew = G.entity("workflow")                                                       
 ee = G.entity("task"); ec = G.entity("comment")                                                         # (invisible; workflow_stages still lists ew)
 G.stat("empty_entities", 3)
 
-# 5. tasks linked to several workflows, primary moving, detaching, double primary (invalid by API, possible from legacy)
+# 5. tasks: exactly one workflow (key `workflow`), moved, unplaced (legacy data without the key), key removed, deleted and restored
 wa, wb, wc = (G.workflow("link target %s" % x, {"domain": "mkt"}) for x in "abc")
-tm = G.task("multi", {wa: "primary", wb: "shared", wc: "shared"})
-G.tick(1); G.event(tm, {"in.%d" % wb: "primary", "in.%d" % wa: "shared"}, actor="bob")                   # primary moves a -> b
-G.tick(1); G.event(tm, {"in.%d" % wb: REMOVE}, actor="bob")                                              # detach the primary: no primary left
-G.tick(1); G.event(tm, {"in.%d" % wc: "primary"}, actor="bob")
-td = G.task("double primary (legacy)", {wa: "primary", wb: "primary"}, channel="legacy", side="system")
-tdel = G.task("linked then deleted", {wa: "primary"})
+tm = G.task("moved twice", wa)
+G.tick(1); G.event(tm, {"workflow": wb}, actor="bob")                                                    # moved a -> b
+G.tick(1); G.event(tm, {"workflow": wc}, actor="bob")                                                    # and on to c
+tu = G.task("legacy task without workflow", None, channel="legacy", side="system")                       # no workflow key at all
+trem = G.task("workflow key removed", wb)
+G.tick(1); G.event(trem, {"workflow": REMOVE}, actor="bob")
+tdel = G.task("placed then deleted", wa)
 G.tick(1); G.delete(tdel)
-tund = G.task("deleted then restored", {wa: "primary"})
+tund = G.task("deleted then restored", wa)
 G.tick(1); G.delete(tund); G.tick(1); G.delete(tund, False)
-tnull = G.task("deleted then key removed", {wb: "primary"})
+tnull = G.task("deleted then key removed", wb)
 G.tick(1); G.delete(tnull); G.tick(1); G.event(tnull, {"deleted": REMOVE}, actor="alice")
-G.stat("multi_link_tasks", 6)
+wd = G.workflow("deleted workflow with a task", {"domain": "mkt"})
+tcas = G.task("cascade-deleted with its workflow", wd)
+G.tick(1); G.delete(wd); G.event(tcas, {"deleted": True, "cascade": 1}, actor="alice")                    # what the server writes on a workflow delete
+G.stat("single_workflow_tasks", 7)
 
 # 6. merges and merge chains; scope out then back in; into kept after scope in (legacy)
 m1, m2, m3, m4 = (G.workflow("merge %d" % k, {"domain": "fin"}) for k in range(1, 5))
@@ -340,7 +344,7 @@ G.stat("comment_zoo", 28)
 
 # 12. the other project: unrelated data must never leak into project adv
 ow = G.workflow("other project workflow", {"domain": "dwh"}, project=2)
-G.task("other task", {ow: "primary"}, project=2)
+G.task("other task", ow, project=2)
 G.comment(ow, "issue", "other issue", project=2)
 
 # 13. attachments (type attachment) exist and must stay out of every view

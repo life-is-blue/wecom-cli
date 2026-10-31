@@ -80,7 +80,7 @@ a workflow name rewritten in the cache|workflows|UPDATE entity_latest SET v='"mu
 a soft-delete marker lost from the cache|deleted|DELETE FROM entity_latest WHERE k='deleted' AND v=CAST('true' AS JSON) ORDER BY entity_id LIMIT 1
 a passed stage turned open in the cache|workflow_stages|UPDATE entity_latest SET v='"open"' WHERE k='stage.development' AND v=CAST('"pass"' AS JSON) ORDER BY entity_id LIMIT 1
 a comment un-resolved in the cache|open_items|UPDATE entity_latest SET v=CAST('false' AS JSON) WHERE k='resolved' AND v=CAST('true' AS JSON) ORDER BY entity_id LIMIT 1
-a primary task link downgraded in the cache|tasks|UPDATE entity_latest SET v='"shared"' WHERE k LIKE 'in.%' AND v=CAST('"primary"' AS JSON) ORDER BY entity_id LIMIT 1
+a task moved to another workflow in the cache|tasks|UPDATE entity_latest SET v=CAST('999999' AS JSON) WHERE k='workflow' ORDER BY entity_id LIMIT 1
 MUT
   stop_server
 fi

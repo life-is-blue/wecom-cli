@@ -241,15 +241,10 @@ func countsOf(pl *importPlan) map[string]int {
 	return c
 }
 
-// primaryParent is the workflow a task is primarily linked to (0 when none).
-func primaryParent(e *core.ImportExisting) int64 {
-	for k, v := range e.Vals {
-		if id, ok := strings.CutPrefix(k, "in."); ok && core.Scalar(v) == "primary" {
-			n, _ := strconv.ParseInt(id, 10, 64)
-			return n
-		}
-	}
-	return 0
+// parentOf is the workflow a task belongs to (0 when none).
+func parentOf(e *core.ImportExisting) int64 {
+	n, _ := strconv.ParseInt(core.Scalar(e.Vals["workflow"]), 10, 64)
+	return n
 }
 
 // buildPlan classifies parsed rows against the current data of the project.
@@ -294,7 +289,7 @@ func buildPlan(ctx context.Context, q execer, projectID, batchID int64, source s
 	pl.Missing = m.Missing(source, matched)
 	// a task is missing when its workflow is in this batch but the batch no longer lists the task
 	for _, e := range tm.Missing(source, matchedTasks) {
-		if matched[primaryParent(e)] {
+		if matched[parentOf(e)] {
 			pl.MissingTasks = append(pl.MissingTasks, e)
 		}
 	}
@@ -641,7 +636,7 @@ type bulkEvent struct {
 	Note     string
 	Corrects int64
 	Deltas   []kv
-	// Primary-links a created or matched task to its workflow: the delta in.<id> = primary is added at
+	// Places a created task in its workflow: the delta workflow = <id> is added at
 	// write time, once the id of a workflow created in this batch is known.
 	ParentEv *bulkEvent
 	ParentID int64
@@ -783,7 +778,7 @@ func (w *bulkWriter) flush() error {
 			if ev.ParentEv != nil {
 				pid = ev.ParentEv.CreatedEntity
 			}
-			ds = append(ds[:len(ds):len(ds)], kv{Key: "in." + strconv.FormatInt(pid, 10), New: core.JSON("primary")})
+			ds = append(ds[:len(ds):len(ds)], kv{Key: "workflow", New: core.JSON(pid)})
 		}
 		for _, d := range ds {
 			ov, nv := nullJSON(d.Old), nullJSON(d.New)
@@ -1009,8 +1004,8 @@ func (s *Store) ApplyImport(ctx context.Context, p Project, actor core.Actor, id
 	return b.result(p, pl.Invalid), nil
 }
 
-// applyTasks writes the tasks of one row under its workflow (parent): new tasks are created with a
-// primary in.<parent> link; matched ones get their source-owned changes (a CONFLICT only when the
+// applyTasks writes the tasks of one row under its workflow (parent): new tasks are created with
+// workflow = <parent>; matched ones get their source-owned changes (a CONFLICT only when the
 // row's workflow conflict was resolved "merge"). Tasks of a skipped row are skipped. Platform-owned
 // keys are never overwritten (the diff does not propose them). Counts go to applied as task_*.
 func applyTasks(w *bulkWriter, batch int64, r *planRow, parent int64, parentEv *bulkEvent, merge bool, user string, applied map[string]int) error {

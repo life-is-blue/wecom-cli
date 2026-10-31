@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/life-is-blue/openetl-cli/internal/core"
 )
 
 // wfRow builds a workflow import row with tasks given as (reference, name, hash) triples.
@@ -70,13 +72,13 @@ func TestImportTasks(t *testing.T) {
 	}
 	wfA := e.byRef(t, sys, "a")
 	a1 := e.taskByRef(t, "a1")
-	if a1.str("name") != "A one" || a1.str("in."+strconv.FormatInt(wfA, 10)) != "primary" {
+	if a1.str("name") != "A one" || core.Scalar(a1.Vals["workflow"]) != strconv.FormatInt(wfA, 10) {
 		t.Fatalf("task a1: %v", a1.Vals)
 	}
-	var primary int64
-	e.st.DB.QueryRow(`SELECT primary_workflow_id FROM tasks WHERE name='A two' AND project_id=?`, e.p.ID).Scan(&primary)
-	if primary != wfA {
-		t.Fatalf("view primary_workflow_id=%d want %d", primary, wfA)
+	var wfID int64
+	e.st.DB.QueryRow(`SELECT workflow_id FROM tasks WHERE name='A two' AND project_id=?`, e.p.ID).Scan(&wfID)
+	if wfID != wfA {
+		t.Fatalf("view workflow_id=%d want %d", wfID, wfA)
 	}
 
 	// a person labels a1; the source renames it, drops b1 and keeps a2

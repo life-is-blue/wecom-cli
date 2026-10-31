@@ -20,7 +20,7 @@ Semantics implemented here (the spec, see docs/m0-naming-spec.md and db/migratio
   * merged_into_id is only shown while scope is 'out'.
   * workflow_stages, open_items and comments only carry rows of workflows that `workflows` lists (soft-deleted, unknown or
     event-less workflows are hidden); open_items has a row only for a workflow with at least one open issue, risk or
-    question; tasks.primary_workflow_id is the lowest workflow id among the task's primary links.
+    question; tasks.workflow_id is the value of the task's `workflow` key (a task belongs to exactly one workflow; NULL when the key is absent).
 Exit status 0 only if everything matches.
 """
 import argparse
@@ -218,10 +218,9 @@ class Raw:
         for tid in self.of_type("task"):
             if tid not in self.has_delta or self.deleted(tid):
                 continue
-            links = {int(k): v for k, v in self.keys(tid, "in.").items()}
-            prim = sorted(k for k, v in links.items() if v == "primary")
+            wf = self.val(tid, "workflow")
             out[tid] = dict(code="TK-%06d" % tid, name=self.val(tid, "name"), attrs=self.keys(tid, "attr.") or None,
-                            assignees=self.keys(tid, "assignee.") or None, primaries=prim,
+                            assignees=self.keys(tid, "assignee.") or None, workflow_id=int(wf) if wf is not None else None,
                             create_time=parse_ts(self.entity[tid][1]))
         return out
 
@@ -318,7 +317,7 @@ def reconcile(raw, q, rep):
 
     # ---- tasks
     et = raw.tasks()
-    cols, rows = q.run("SELECT id, code, name, attrs, assignees, primary_workflow_id, create_time FROM tasks ORDER BY id")
+    cols, rows = q.run("SELECT id, code, name, attrs, assignees, workflow_id, create_time FROM tasks ORDER BY id")
     at = as_dict(cols, rows, "id")
     rep.count("tasks", len(et))
     for tid in sorted(set(et) | set(at)):
@@ -332,13 +331,9 @@ def reconcile(raw, q, rep):
                 rep.bad("tasks", tid, f, e[f], a[f])
         if parse_ts(a["create_time"]) != e["create_time"]:
             rep.bad("tasks", tid, "create_time", str(e["create_time"]), a["create_time"])
-        prim = e["primaries"]
-        apw = a["primary_workflow_id"]
-        if len(prim) > 1:
-            rep.notes.append("task %d has %d primary links %s (only legacy/import data); view shows %s" % (tid, len(prim), prim, apw))
-        if (prim[0] if prim else None) != apw:  # prim is sorted: the lowest workflow id wins
-            rep.bad("tasks", tid, "primary_workflow_id", prim[0] if prim else None, apw,
-                    "the view takes the lowest id among the in.<id> keys whose latest value is 'primary'")
+        aw_ = a["workflow_id"]
+        if e["workflow_id"] != (int(aw_) if aw_ is not None else None):
+            rep.bad("tasks", tid, "workflow_id", e["workflow_id"], aw_, "the view shows the value of the task's `workflow` key")
 
     # ---- workflow_stages (every workflow entity, all stages)
     cols, rows = q.run("SELECT workflow_id, stage_key, seq, status FROM workflow_stages ORDER BY workflow_id, seq")

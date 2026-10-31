@@ -498,6 +498,18 @@ func (q *request) listOpts() (store.ListOpts, error) {
 type mutOpts struct {
 	Etag, Reason, Note, RequestID string
 	ValidateOnly                  bool
+	Evidence                      []string // resolved attachment names, see evidence()
+}
+
+// evidence validates the evidence_attachments of a request against the workflow and keeps the
+// canonical names in the options. Called right before apply, after the handler's other argument checks.
+func (s *Server) evidence(q *request, o *mutOpts, wf int64, refs *[]string) error {
+	if refs == nil || len(*refs) == 0 {
+		return nil
+	}
+	names, err := s.Store.ResolveEvidence(q.r.Context(), q.pr.project(), wf, *refs)
+	o.Evidence = names
+	return err
 }
 
 func (q *request) mutOpts(etag, reason, note *string, requestID *string, validateOnly *bool) (mutOpts, error) {
@@ -531,7 +543,7 @@ func (q *request) mutOpts(etag, reason, note *string, requestID *string, validat
 func (s *Server) apply(q *request, typ string, id int64, o mutOpts, plan func(*store.Entity, core.Env) ([]store.PlannedChange, error), eventTime time.Time) (*store.Result, error) {
 	res, err := s.Store.Apply(q.r.Context(), store.ChangeRequest{
 		ProjectID: q.pr.Member.ProjectID, EntityType: typ, EntityID: id, Actor: q.pr.actor(),
-		ReasonKey: o.Reason, Note: o.Note, RequestID: o.RequestID, Etag: o.Etag, ValidateOnly: o.ValidateOnly, Fingerprint: q.fingerprint(),
+		ReasonKey: o.Reason, Note: o.Note, RequestID: o.RequestID, Etag: o.Etag, ValidateOnly: o.ValidateOnly, Fingerprint: q.fingerprint(), Evidence: o.Evidence,
 		EventTime: eventTime, Plan: plan,
 	})
 	if err != nil {

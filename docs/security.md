@@ -6,6 +6,12 @@
   **membership** (role `viewer` / `editor` / `admin`, side `delivery` / `customer`) per project.
 * `viewer` reads; `editor` also writes workflows, tasks, comments and attachments; `admin` additionally manages
   members, tokens and config of **its** project. Agent accounts can never be admin.
+* **Side rules and the admin override.** The rule table reserves some changes for one side (for example only the customer side
+  passes `accept`). An `admin` of the other side may still make such a change, but only with `evidence_attachments`
+  (attachments of that workflow, validated like all evidence); without them the call fails with
+  `FAILED_PRECONDITION / EVIDENCE_REQUIRED_FOR_OVERRIDE`. Editors and viewers get no override (`SIDE_NOT_ALLOWED`,
+  `ROLE_INSUFFICIENT`). The event keeps the real actor and side and a delta `override.<key>` with the reserved side and the
+  evidence, so every override is listed by `SELECT ... FROM events WHERE k LIKE 'override.%'` (INV-29).
 * Every request is resolved to one project through the caller's membership; storage keys, entities and events all carry the
   project id.
 

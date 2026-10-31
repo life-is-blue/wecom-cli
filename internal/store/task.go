@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,27 +32,8 @@ func RenderTask(p Project, e *Entity) api.Task {
 	if e.Creator != "" {
 		t.Creator = ptr(accountName(e.Creator))
 	}
-	var ms []api.TaskMembership
-	var wfIDs []int64
-	mem := map[int64]string{}
-	for k, v := range e.Vals {
-		if rest, ok := strings.CutPrefix(k, "in."); ok {
-			if n, err := strconv.ParseInt(rest, 10, 64); err == nil {
-				wfIDs = append(wfIDs, n)
-				mem[n] = core.Scalar(v)
-			}
-		}
-	}
-	sort.Slice(wfIDs, func(i, j int) bool { return wfIDs[i] < wfIDs[j] })
-	for _, n := range wfIDs {
-		m := api.TaskMembership{Workflow: p.workflowName(n)}
-		if mem[n] == "primary" {
-			m.Primary = ptr(true)
-		}
-		ms = append(ms, m)
-	}
-	if len(ms) > 0 {
-		t.Workflows = &ms
+	if n, err := strconv.ParseInt(core.Scalar(e.Vals["workflow"]), 10, 64); err == nil {
+		t.Workflow = p.workflowName(n)
 	}
 	return t
 }
@@ -113,12 +93,12 @@ func (s *Store) ListTasks(ctx context.Context, p Project, o ListOpts) ([]api.Tas
 			}
 			q, err := cmpSQL(latestText("e", "assignee."+k), op)
 			return q, []any{AccountID(v)}, err
-		case field == "workflows.workflow":
+		case field == "workflow":
 			wf, ok := p.ParseWorkflowRef(v)
 			if !ok || op != "=" {
-				return "", nil, badFilter("workflows.workflow expects = and a workflow resource name")
+				return "", nil, badFilter("workflow expects = and a workflow resource name")
 			}
-			return latestRaw("e", "in."+strconv.FormatInt(wf, 10)) + " IS NOT NULL", nil, nil
+			return latestText("e", "workflow") + " = ?", []any{strconv.FormatInt(wf, 10)}, nil
 		case field == "create_time":
 			t, err := parseTime(v)
 			if err != nil {

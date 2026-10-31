@@ -57,7 +57,7 @@ docstring matrix tries to be but, being prose, cannot enforce.
 
 * The split is documented: policy in `rule`, invariants in `builtin()`. `docs/security.md` already states the import channel
   skips order validation by design; keep that explicit.
-* Risk to watch: `checkRules` lets `admin` bypass the side filter (`in.Actor.Role == RoleAdmin`). Keep, but cover it with a test.
+* Risk to watch: `checkRules` used to let `admin` bypass the side filter. Now an admin acts for the other side only with evidence, recorded as `override.<key>` on the event (docs/invariants.md INV-29); tested in `core` and `gw`.
 * Not adopted: SKIP LOCKED (no queue), `DagRun`-style side-effect timestamps (events already carry `event_time/create_time`).
 
 ## Evidence

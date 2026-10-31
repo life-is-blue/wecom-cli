@@ -205,15 +205,15 @@ def main():
     call("undeleteWorkflow", path_vars=w2)
     call("undeleteWorkflow", path_vars=w2, tag="undelete not deleted: idempotent 200 (AIP-164 says ALREADY_EXISTS; documented deviation)")
     # ---- tasks
-    _, tk, _ = call("createTask", path_vars=P, body={"display_name": "task a", "labels": {"kind": "sql"}, "workflows": [{"workflow": wf["name"], "primary": True}]})
+    _, tk, _ = call("createTask", path_vars=P, body={"display_name": "task a", "labels": {"kind": "sql"}, "workflow": wf["name"]})
     t = {**P, "task": rid(tk["name"])}
     call("createTask", path_vars=P, body={"display_name": "t"}, query={"task_id": "tk-custom"}, expect=400, tag="client-id")
-    call("listTasks", path_vars=P, query={"page_size": 5, "filter": f'workflows.workflow = "{wf["name"]}"'})
+    call("listTasks", path_vars=P, query={"page_size": 5, "filter": f'workflow = "{wf["name"]}"'})
     call("getTask", path_vars=t)
     _, curt, _ = call("getTask", path_vars=t)
     call("updateTask", path_vars=t, query={"update_mask": "display_name"}, body={"task": {"display_name": "task a2"}, "etag": curt["etag"]})
-    call("assignTask", path_vars=t, body={"workflow": wf2["name"], "membership": "SHARED"})
-    call("assignTask", path_vars=t, body={"workflow": wf2["name"], "membership": "NONE"}, tag="detach")
+    call("assignTask", path_vars=t, body={"workflow": wf2["name"]}, tag="move")
+    call("assignTask", path_vars=t, body={"workflow": wf["name"]}, tag="move back")
     call("deleteTask", path_vars=t)
     call("undeleteTask", path_vars=t)
     # ---- comments

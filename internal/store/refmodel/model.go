@@ -85,6 +85,7 @@ type WF struct {
 	Scope   string            // "", in, out
 	Into    int               // merge target (model id), 0 none
 	Deleted string            // "", true, false
+	Ev      map[string]string // stage -> "E" when evidence is stored for it (evidence.<stage>)
 	Ver     int               // number of events
 	Log     []map[string]string
 }
@@ -98,6 +99,10 @@ func (w *WF) clone() *WF {
 	c.Stage = map[string]string{}
 	for k, v := range w.Stage {
 		c.Stage[k] = v
+	}
+	c.Ev = map[string]string{}
+	for k, v := range w.Ev {
+		c.Ev[k] = v
 	}
 	return &c
 }
@@ -138,16 +143,31 @@ type Comment struct {
 	Log      []map[string]string
 }
 
+// Task is one task: it belongs to exactly one workflow (WF, a model id).
+type Task struct {
+	ID      int
+	Name    string
+	WF      int
+	Deleted string // "", true, false
+	Cascade bool   // deleted because its workflow was deleted (key cascade set)
+	Ver     int
+	Log     []map[string]string
+}
+
+// IsDeleted reports soft deletion.
+func (t *Task) IsDeleted() bool { return t.Deleted == "true" }
+
 // Model is the whole project.
 type Model struct {
 	WFs      map[int]*WF
 	Comments map[int]*Comment
+	Tasks    map[int]*Task
 	reqs     map[string]reqRec
 	next     int
 }
 
 type reqRec struct {
-	typ string // workflow|comment
+	typ string // workflow|comment|task
 	id  int
 	fp  string
 }
@@ -161,7 +181,7 @@ func fingerprint(op Op) string {
 
 // New returns an empty model.
 func New() *Model {
-	return &Model{WFs: map[int]*WF{}, Comments: map[int]*Comment{}, reqs: map[string]reqRec{}, next: 1}
+	return &Model{WFs: map[int]*WF{}, Comments: map[int]*Comment{}, Tasks: map[int]*Task{}, reqs: map[string]reqRec{}, next: 1}
 }
 
 // Sentinel ids for entities that do not exist in this project (never created, or in another project).
@@ -171,10 +191,13 @@ const (
 
 // Op is one randomly generated request.
 type Op struct {
-	Kind    string // create|advance|regress|scope|delete|undelete|rename|label|setstages|ccreate|cresolve|creopen|cdelete
+	Kind    string // create|advance|regress|scope|delete|undelete|rename|label|setstages|ccreate|cresolve|creopen|cdelete|tcreate|tassign|tdelete|tundelete
 	Actor   Actor
-	Target  int // workflow model id (or Missing)
+	Target  int // workflow model id (or Missing); the workflow of tcreate and tassign
 	Comment int // comment model id (or Missing)
+	Task    int // task model id (or Missing)
+	// Evidence of advance/regress/scope/setstages: 0 none, 1 an attachment of the target workflow, 2 one that is not
+	Evidence int
 
 	Name     string
 	Label    string
@@ -201,9 +224,10 @@ type Result struct {
 	NoOp     bool // success, nothing recorded
 	Replayed bool
 	Created  int // model id of a created entity
-	Entity   int // affected entity id (wf or comment), 0 none
+	Entity   int // affected entity id (wf, comment or task), 0 none
 	EntType  string
-	Preview  *WF // validate_only: state the workflow would have
+	Cascaded []int // tasks the workflow delete/undelete took along (one event each)
+	Preview  *WF   // validate_only: state the workflow would have
 	Wrote    bool
 	Event    map[string]string // keys written (key -> new value, "" = removed)
 }
@@ -220,7 +244,11 @@ func (m *Model) Do(op Op) Result {
 		return m.doCreate(op)
 	case "advance":
 		return m.doWF(op, func(w *WF) ([]chg, *Err) {
-			return m.stageChgs(w, [][2]string{{op.Stage, "pass"}}), nil
+			ch := m.stageChgs(w, [][2]string{{op.Stage, "pass"}})
+			if op.Evidence == 1 && w.Stage[op.Stage] != "pass" { // evidence.<stage> rides with the stage change
+				ch = append(ch, diff(w.Ev[op.Stage], "E", "evidence."+op.Stage)...)
+			}
+			return ch, nil
 		})
 	case "regress":
 		if op.Reason == "" {
@@ -233,6 +261,22 @@ func (m *Model) Do(op Op) Result {
 					return nil, e("FAILED_PRECONDITION", "NOT_REGRESSIBLE")
 				}
 				pairs = append(pairs, [2]string{s, "open"})
+			}
+			// no cascade: every PASSED stage after a regressed one must be named too
+			var later []string
+			for i, s := range Stages {
+				if w.Stage[s] != "pass" || contains(op.Stages, s) {
+					continue
+				}
+				for _, r := range op.Stages[:] {
+					if stageSeq(r) < i+1 {
+						later = append(later, s)
+						break
+					}
+				}
+			}
+			if len(later) > 0 {
+				return nil, e("FAILED_PRECONDITION", "REGRESS_LATER_STAGES_PASSED")
 			}
 			return m.stageChgs(w, pairs), nil
 		})
@@ -263,12 +307,25 @@ func (m *Model) Do(op Op) Result {
 		})
 	case "scope":
 		return m.doScope(op)
+	case "tcreate":
+		return m.doTaskCreate(op)
+	case "tassign", "tdelete", "tundelete":
+		return m.doTaskMut(op)
 	case "ccreate":
 		return m.doCommentCreate(op)
 	case "cresolve", "creopen", "cdelete":
 		return m.doCommentMut(op)
 	}
 	panic("unknown op " + op.Kind)
+}
+
+func contains(l []string, x string) bool {
+	for _, y := range l {
+		if y == x {
+			return true
+		}
+	}
+	return false
 }
 
 func diff(old, new, key string) []chg {
@@ -311,7 +368,7 @@ type target struct {
 	logf func(map[string]string)
 }
 
-func (m *Model) pipeline(op Op, t target, plan func() ([]chg, *Err), validate func([]chg) *Err, commit func([]chg)) Result {
+func (m *Model) pipeline(op Op, t target, plan func() ([]chg, *Err), validate func([]chg) ([]chg, *Err), commit func([]chg)) Result {
 	res := Result{EntType: t.typ}
 	if t.id != 0 {
 		res.Entity = t.id
@@ -350,10 +407,12 @@ func (m *Model) pipeline(op Op, t target, plan func() ([]chg, *Err), validate fu
 		res.NoOp = true
 		return res
 	}
-	if err := validate(changes); err != nil {
+	extra, err := validate(changes)
+	if err != nil {
 		res.Err = err
 		return res
 	}
+	changes = append(changes, extra...) // override records ride on the event whatever their old value
 	ev := map[string]string{}
 	for _, c := range changes {
 		ev[c.key] = c.new
@@ -388,7 +447,7 @@ func kindOf(reason string) string { return reasons[reason].kind }
 
 func (m *Model) doCreate(op Op) Result {
 	id := m.next
-	w := &WF{ID: id, Name: op.Name, Labels: map[string]string{}, Stage: map[string]string{}}
+	w := &WF{ID: id, Name: op.Name, Labels: map[string]string{}, Stage: map[string]string{}, Ev: map[string]string{}}
 	var pairs [][2]string
 	for i, s := range op.Stages {
 		pairs = append(pairs, [2]string{s, map[string]string{"PASSED": "pass", "OPEN": "open", "NOT_APPLICABLE": "na"}[op.States[i]]})
@@ -402,7 +461,7 @@ func (m *Model) doCreate(op Op) Result {
 			}
 			return append(ch, m.stageChgs(w, pairs)...), nil
 		},
-		func(ch []chg) *Err { return m.validateWF(op, w, ch) },
+		func(ch []chg) ([]chg, *Err) { return m.validateWF(op, w, ch) },
 		func(ch []chg) {
 			m.next++
 			m.WFs[id] = w
@@ -433,13 +492,17 @@ func (m *Model) doCreate(op Op) Result {
 }
 
 func (m *Model) doWF(op Op, plan func(w *WF) ([]chg, *Err)) Result {
+	if op.Evidence == 2 { // the handler resolves evidence before it applies anything
+		return Result{Err: e("INVALID_ARGUMENT", "INVALID_EVIDENCE")}
+	}
 	w := m.WFs[op.Target]
 	if w == nil {
 		return Result{Err: e("NOT_FOUND", "NOT_FOUND")}
 	}
+	var cascaded []int
 	res := m.pipeline(op, target{typ: "workflow", id: w.ID},
 		func() ([]chg, *Err) { return plan(w) },
-		func(ch []chg) *Err { return m.validateWF(op, w, ch) },
+		func(ch []chg) ([]chg, *Err) { return m.validateWF(op, w, ch) },
 		func(ch []chg) {
 			applyWF(w, ch)
 			w.Ver++
@@ -447,7 +510,13 @@ func (m *Model) doWF(op Op, plan func(w *WF) ([]chg, *Err)) Result {
 			if op.ReqID != "" {
 				m.reqs[op.ReqID] = reqRec{"workflow", w.ID, fingerprint(op)}
 			}
+			for _, c := range ch {
+				if c.key == "deleted" {
+					cascaded = m.cascade(w.ID, c.new == "true")
+				}
+			}
 		})
+	res.Cascaded = cascaded
 	if res.Err == nil && op.Validate && res.Event != nil {
 		p := w.clone()
 		for k, v := range res.Event {
@@ -494,6 +563,12 @@ func setKey(w *WF, k, v string) {
 		}
 	case k == "deleted":
 		w.Deleted = v
+	case strings.HasPrefix(k, "evidence."):
+		if v == "" {
+			delete(w.Ev, strings.TrimPrefix(k, "evidence."))
+		} else {
+			w.Ev[strings.TrimPrefix(k, "evidence.")] = v
+		}
 	}
 }
 
@@ -537,29 +612,38 @@ func itoa(n int) string {
 
 // ---------------------------------------------------------------- the rules
 
-// mayPass: who may set stage <s> to pass (seed rules; admins may do anything).
-func mayPass(s string, a Actor) bool {
-	if a.Role == "admin" {
-		return true
-	}
+// passSides: the sides the seed rules let set stage <s> to pass.
+func passSides(s string) []string {
 	if s == "accept" {
-		return a.Side == "customer"
+		return []string{"customer"}
 	}
-	return a.Side == "delivery"
+	return []string{"delivery"}
 }
 
-// mayReopen: who may set stage <s> back to open (with a reject reason).
-func mayReopen(s string, a Actor) bool {
-	if a.Role == "admin" {
-		return true
-	}
+// reopenSides: the sides that may set stage <s> back to open (with a reject reason).
+func reopenSides(s string) []string {
 	switch s {
 	case "accept":
-		return a.Side == "customer"
+		return []string{"customer"}
 	case "verify":
-		return true // delivery or customer
+		return []string{"customer", "delivery"} // delivery or customer
 	}
-	return a.Side == "delivery"
+	return []string{"delivery"}
+}
+
+// side judges a side-restricted change: the actor's own side passes; an admin of another side passes with
+// evidence (the override, returned as the record value: the reserved side(s), sorted); everyone else is denied.
+func side(sides []string, op Op) (override string, err *Err) {
+	if contains(sides, op.Actor.Side) {
+		return "", nil
+	}
+	if op.Actor.Role != "admin" {
+		return "", e("PERMISSION_DENIED", "SIDE_NOT_ALLOWED")
+	}
+	if op.Evidence != 1 {
+		return "", e("FAILED_PRECONDITION", "EVIDENCE_REQUIRED_FOR_OVERRIDE")
+	}
+	return strings.Join(sides, ","), nil
 }
 
 func (m *Model) live(id int) bool {
@@ -567,9 +651,17 @@ func (m *Model) live(id int) bool {
 	return w != nil && !w.IsDeleted()
 }
 
+// overrideOf appends the override record of change key (nothing when the actor acted for their own side).
+func overrideOf(extra []chg, key, side string) []chg {
+	if side == "" {
+		return extra
+	}
+	return append(extra, chg{"override." + key, "", side})
+}
+
 // validateWF judges the changes of one event in order. Within one change the structural checks come
 // before the rule-table checks; the first failing change wins.
-func (m *Model) validateWF(op Op, w *WF, changes []chg) *Err {
+func (m *Model) validateWF(op Op, w *WF, changes []chg) ([]chg, *Err) {
 	// spec: a soft-deleted workflow accepts nothing but the change that restores it
 	if w.IsDeleted() {
 		restores := false
@@ -579,73 +671,78 @@ func (m *Model) validateWF(op Op, w *WF, changes []chg) *Err {
 			}
 		}
 		if !restores {
-			return e("FAILED_PRECONDITION", "ENTITY_DELETED")
+			return nil, e("FAILED_PRECONDITION", "ENTITY_DELETED")
 		}
 	}
 	if err := checkReason(op.Reason, op.Note); err != nil {
-		return err
+		return nil, err
 	}
 	after := w.clone()
 	for _, c := range changes {
 		setKey(after, c.key, c.new)
 	}
 	rk := kindOf(op.Reason)
+	var extra []chg
 	for _, c := range changes {
 		switch {
 		case strings.HasPrefix(c.key, "stage."):
 			s := strings.TrimPrefix(c.key, "stage.")
 			if stageSeq(s) == 0 {
-				return e("INVALID_ARGUMENT", "UNKNOWN_STAGE")
+				return nil, e("INVALID_ARGUMENT", "UNKNOWN_STAGE")
 			}
 			switch c.new {
 			case "pass":
 				for _, earlier := range Stages[:stageSeq(s)-1] {
 					if x := after.Eff(earlier); x != "pass" && x != "na" {
-						return e("FAILED_PRECONDITION", "STAGE_ORDER_VIOLATION")
+						return nil, e("FAILED_PRECONDITION", "STAGE_ORDER_VIOLATION")
 					}
 				}
-				if !mayPass(s, op.Actor) {
-					return e("PERMISSION_DENIED", "SIDE_NOT_ALLOWED")
+				ov, err := side(passSides(s), op)
+				if err != nil {
+					return nil, err
 				}
+				extra = overrideOf(extra, c.key, ov)
 			case "open":
 				if c.old == "pass" && rk != "reject" {
-					return e("FAILED_PRECONDITION", "REASON_REQUIRED")
+					return nil, e("FAILED_PRECONDITION", "REASON_REQUIRED")
 				}
-				if !mayReopen(s, op.Actor) {
-					return e("PERMISSION_DENIED", "SIDE_NOT_ALLOWED")
+				ov, err := side(reopenSides(s), op)
+				if err != nil {
+					return nil, err
 				}
+				extra = overrideOf(extra, c.key, ov)
 				if rk != "reject" {
-					return e("FAILED_PRECONDITION", "REASON_REQUIRED")
+					return nil, e("FAILED_PRECONDITION", "REASON_REQUIRED")
 				}
 			case "na":
 				if c.old == "pass" { // a PASSED stage only leaves PASSED through a reject reason (regress) and
 					// N/A needs another kind of reason, so PASSED -> N/A is impossible in one step
-					return e("FAILED_PRECONDITION", "REASON_REQUIRED")
+					return nil, e("FAILED_PRECONDITION", "REASON_REQUIRED")
 				}
 				if rk != "not_applicable" {
-					return e("FAILED_PRECONDITION", "REASON_REQUIRED")
+					return nil, e("FAILED_PRECONDITION", "REASON_REQUIRED")
 				}
 			}
 		case c.key == "scope":
 			if c.new == "out" {
 				if rk != "discard" {
-					return e("FAILED_PRECONDITION", "REASON_REQUIRED")
+					return nil, e("FAILED_PRECONDITION", "REASON_REQUIRED")
 				}
 				if op.Reason == "merged" {
 					if err := m.mergeCheck(w.ID, after.Into); err != nil {
-						return err
+						return nil, err
 					}
 				}
 			}
 		case c.key == "into":
 			if c.new != "" {
 				if err := m.mergeCheck(w.ID, after.Into); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	return nil
+	return extra, nil
 }
 
 // mergeCheck: target must be a live workflow of this project, not the workflow itself, and the
@@ -674,6 +771,147 @@ func (m *Model) mergeCheck(self, target int) *Err {
 	return e("FAILED_PRECONDITION", "MERGE_CYCLE")
 }
 
+// ---------------------------------------------------------------- tasks
+
+// cascade is a workflow delete (del) or undelete: one event per task, in id order. A delete takes the live
+// tasks of the workflow along and marks them; an undelete restores exactly the marked ones.
+func (m *Model) cascade(wf int, del bool) []int {
+	var ids []int
+	for id, t := range m.Tasks {
+		if t.WF == wf && (del && !t.IsDeleted() || !del && t.Cascade) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		t := m.Tasks[id]
+		if del {
+			t.Deleted, t.Cascade = "true", true
+			t.Log = append(t.Log, map[string]string{"deleted": "true", "cascade": "ev"})
+		} else {
+			t.Deleted, t.Cascade = "false", false
+			t.Log = append(t.Log, map[string]string{"deleted": "false", "cascade": ""})
+		}
+		t.Ver++
+	}
+	return ids
+}
+
+// taskWF is the handler-level check of a workflow reference: it must exist in the project (deleted or not).
+func (m *Model) taskWF(op Op) *Err {
+	if m.WFs[op.Target] == nil {
+		return e("INVALID_ARGUMENT", "WORKFLOW_NOT_FOUND")
+	}
+	return nil
+}
+
+func (m *Model) doTaskCreate(op Op) Result {
+	if err := m.taskWF(op); err != nil {
+		return Result{Err: err}
+	}
+	id := m.next
+	t := &Task{ID: id, Name: op.Name, WF: op.Target}
+	res := m.pipeline(op, target{typ: "task"},
+		func() ([]chg, *Err) {
+			return []chg{{"name", "", op.Name}, {"workflow", "", itoa(op.Target)}}, nil
+		},
+		func(ch []chg) ([]chg, *Err) {
+			if err := checkReason(op.Reason, op.Note); err != nil {
+				return nil, err
+			}
+			if !m.live(op.Target) {
+				return nil, e("FAILED_PRECONDITION", "ENTITY_DELETED")
+			}
+			return nil, nil
+		},
+		func(ch []chg) {
+			m.next++
+			t.Ver = 1
+			t.Log = append(t.Log, logOf(ch))
+			m.Tasks[id] = t
+			if op.ReqID != "" {
+				m.reqs[op.ReqID] = reqRec{"task", id, fingerprint(op)}
+			}
+		})
+	if res.Err == nil && !res.Replayed {
+		res.Entity = id
+		if res.Wrote {
+			res.Created = id
+		}
+		if op.Validate {
+			res.Entity = 0
+		}
+	}
+	return res
+}
+
+// doTaskMut: tassign (move to another workflow), tdelete, tundelete.
+func (m *Model) doTaskMut(op Op) Result {
+	if op.Kind == "tassign" {
+		if err := m.taskWF(op); err != nil {
+			return Result{Err: err}
+		}
+	}
+	t := m.Tasks[op.Task]
+	if t == nil {
+		return Result{Err: e("NOT_FOUND", "NOT_FOUND")}
+	}
+	return m.pipeline(op, target{typ: "task", id: t.ID},
+		func() ([]chg, *Err) {
+			switch op.Kind {
+			case "tassign":
+				return diff(itoa(t.WF), itoa(op.Target), "workflow"), nil
+			case "tdelete":
+				return diff(t.Deleted, "true", "deleted"), nil
+			}
+			return diff(t.Deleted, "false", "deleted"), nil
+		},
+		func(ch []chg) ([]chg, *Err) {
+			if t.IsDeleted() { // a deleted task accepts nothing but its restore, and that only under a live workflow
+				if op.Kind != "tundelete" {
+					return nil, e("FAILED_PRECONDITION", "ENTITY_DELETED")
+				}
+				if !m.live(t.WF) {
+					return nil, e("FAILED_PRECONDITION", "PARENT_DELETED")
+				}
+			}
+			if err := checkReason(op.Reason, op.Note); err != nil {
+				return nil, err
+			}
+			if op.Kind == "tassign" && !m.live(op.Target) {
+				return nil, e("FAILED_PRECONDITION", "ENTITY_DELETED")
+			}
+			return nil, nil
+		},
+		func(ch []chg) {
+			switch op.Kind {
+			case "tassign":
+				t.WF = op.Target
+			case "tdelete":
+				t.Deleted = "true"
+			default:
+				t.Deleted = "false"
+			}
+			t.Ver++
+			t.Log = append(t.Log, logOf(ch))
+			if op.ReqID != "" {
+				m.reqs[op.ReqID] = reqRec{"task", t.ID, fingerprint(op)}
+			}
+		})
+}
+
+// LiveTasks returns the non-deleted tasks by id.
+func (m *Model) LiveTasks() []*Task {
+	var out []*Task
+	for _, t := range m.Tasks {
+		if !t.IsDeleted() {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // ---------------------------------------------------------------- comments
 
 func (m *Model) doCommentCreate(op Op) Result {
@@ -687,14 +925,14 @@ func (m *Model) doCommentCreate(op Op) Result {
 		func() ([]chg, *Err) {
 			return []chg{{"on", "", itoa(w.ID)}, {"kind", "", op.CKind}, {"body", "", op.CBody}}, nil
 		},
-		func(ch []chg) *Err {
+		func(ch []chg) ([]chg, *Err) {
 			if err := checkReason(op.Reason, op.Note); err != nil {
-				return err
+				return nil, err
 			}
 			if op.Future {
-				return e("INVALID_ARGUMENT", "EVENT_TIME_IN_FUTURE")
+				return nil, e("INVALID_ARGUMENT", "EVENT_TIME_IN_FUTURE")
 			}
-			return nil
+			return nil, nil
 		},
 		func(ch []chg) {
 			m.next++
@@ -742,11 +980,11 @@ func (m *Model) doCommentMut(op Op) Result {
 			}
 			return []chg{{"deleted", c.Deleted, "true"}}, nil
 		},
-		func(ch []chg) *Err {
+		func(ch []chg) ([]chg, *Err) {
 			if !m.live(c.WF) { // spec: a comment of a deleted workflow is read-only
-				return e("FAILED_PRECONDITION", "ENTITY_DELETED")
+				return nil, e("FAILED_PRECONDITION", "ENTITY_DELETED")
 			}
-			return checkReason(op.Reason, op.Note)
+			return nil, checkReason(op.Reason, op.Note)
 		},
 		func(ch []chg) {
 			if key == "resolved" {

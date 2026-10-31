@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -547,17 +548,32 @@ func TestCommentDryRunSkipsUpload(t *testing.T) {
 func TestTaskAndCommentActions(t *testing.T) {
 	f := newFake(t)
 	e := newEnv(t, f)
-	if code, _, errs := e.run("", "task", "assign", "TK-004567", "--workflow", "WF-000123", "--membership", "shared"); code != 0 {
+	if code, _, errs := e.run("", "task", "assign", "TK-004567", "--workflow", "WF-000123"); code != 0 {
 		t.Fatal(errs)
 	}
 	r := f.last()
-	if r.Path != "/v1/projects/acme-dw/tasks/tk-004567:assign" || mustJSON(t, r.Body)["membership"] != "SHARED" ||
+	if r.Path != "/v1/projects/acme-dw/tasks/tk-004567:assign" || mustJSON(t, r.Body)["membership"] != nil ||
 		mustJSON(t, r.Body)["workflow"] != "projects/acme-dw/workflows/wf-000123" {
 		t.Fatalf("%+v", r)
 	}
 	e.run("", "task", "list", "--workflow", "WF-000123")
-	if q := f.last().RawQuery; !strings.Contains(q, "workflows.workflow") {
+	if q := f.last().RawQuery; !strings.HasPrefix(q, "filter=workflow+%3D+") {
 		t.Fatal(q)
+	}
+	e.run("", "task", "create", "--name", "n", "--workflow", "WF-000123")
+	if r = f.last(); r.Method != "POST" || mustJSON(t, r.Body)["workflow"] != "projects/acme-dw/workflows/wf-000123" {
+		t.Fatalf("%+v", r)
+	}
+	if code, _, _ := e.run("", "task", "create", "--name", "n"); code != 2 {
+		t.Fatalf("task create without --workflow must be a usage error, exit %d", code)
+	}
+	e.run("", "stage", "regress", "WF-000123", "--stage", "accept", "--stage", "verify", "--reason", "rej_row_count", "--evidence", "at-000009")
+	if r = f.last(); !strings.HasSuffix(r.Path, ":regressStage") || fmt.Sprint(mustJSON(t, r.Body)["evidence_attachments"]) != "[at-000009]" {
+		t.Fatalf("%+v", r)
+	}
+	e.run("", "scope", "set", "WF-000123", "--to", "in", "--evidence", "at-000009")
+	if r = f.last(); !strings.HasSuffix(r.Path, ":setScope") || fmt.Sprint(mustJSON(t, r.Body)["evidence_attachments"]) != "[at-000009]" {
+		t.Fatalf("%+v", r)
 	}
 	e.run("", "comment", "resolve", "WF-000123", "CM-000031", "--note", "fixed")
 	if r = f.last(); r.Path != "/v1/projects/acme-dw/workflows/wf-000123/comments/cm-000031:resolve" {

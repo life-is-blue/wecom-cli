@@ -421,14 +421,15 @@ Usage:
   openetl scope set WF --to in|out [--reason R] [--into WF] [flags]
 
 Flags:
-      --dry-run             validate only (validate_only); nothing is written
-      --etag string         expected etag of the target (optimistic concurrency)
-  -h, --help                help for set
-      --into string         target workflow when --reason merged
-      --note string         free-text note recorded with the change
-      --reason string       reason_key from the project config
-      --request-id string   idempotency key, a UUID (default: generated)
-      --to string           in or out
+      --dry-run                validate only (validate_only); nothing is written
+      --etag string            expected etag of the target (optimistic concurrency)
+      --evidence stringArray   attachment resource name as evidence (repeatable); required when an admin acts for the other side
+  -h, --help                   help for set
+      --into string            target workflow when --reason merged
+      --note string            free-text note recorded with the change
+      --reason string          reason_key from the project config
+      --request-id string      idempotency key, a UUID (default: generated)
+      --to string              in or out
 ```
 
 ### openetl stage advance
@@ -442,7 +443,7 @@ Usage:
 Flags:
       --dry-run                validate only (validate_only); nothing is written
       --etag string            expected etag of the target (optimistic concurrency)
-      --evidence stringArray   attachment resource name as evidence (repeatable)
+      --evidence stringArray   attachment resource name as evidence (repeatable); required when an admin acts for the other side
   -h, --help                   help for advance
       --note string            free-text note recorded with the change
       --reason string          reason_key from the project config
@@ -459,41 +460,41 @@ Usage:
   openetl stage regress WF --stage STAGE [--stage STAGE] --reason REJECT_REASON [flags]
 
 Flags:
-      --dry-run             validate only (validate_only); nothing is written
-      --etag string         expected etag of the target (optimistic concurrency)
-  -h, --help                help for regress
-      --note string         free-text note recorded with the change
-      --reason string       reason_key from the project config
-      --request-id string   idempotency key, a UUID (default: generated)
-      --stage strings       stage to set back to OPEN (repeatable)
+      --dry-run                validate only (validate_only); nothing is written
+      --etag string            expected etag of the target (optimistic concurrency)
+      --evidence stringArray   attachment resource name as evidence (repeatable); required when an admin acts for the other side
+  -h, --help                   help for regress
+      --note string            free-text note recorded with the change
+      --reason string          reason_key from the project config
+      --request-id string      idempotency key, a UUID (default: generated)
+      --stage strings          stage to set back to OPEN (repeatable); name every PASSED stage after it too
 ```
 
 ### openetl task assign
 
 ```
-Attach a task to a workflow, change its membership, or detach (none)
+Move a task to another workflow
 
 Usage:
-  openetl task assign TK --workflow WF [--membership primary|shared|none] [flags]
+  openetl task assign TK --workflow WF [flags]
 
 Flags:
       --dry-run             validate only (validate_only); nothing is written
       --etag string         expected etag of the target (optimistic concurrency)
   -h, --help                help for assign
-      --membership string   primary, shared or none (detach) (default "primary")
       --note string         free-text note recorded with the change
       --reason string       reason_key from the project config
       --request-id string   idempotency key, a UUID (default: generated)
-      --workflow string     workflow to attach to / detach from
+      --workflow string     workflow to move the task to
 ```
 
 ### openetl task create
 
 ```
-Create a task (the first --workflow becomes primary)
+Create a task in a workflow
 
 Usage:
-  openetl task create --name NAME [--workflow WF]... [flags]
+  openetl task create --name NAME --workflow WF [flags]
 
 Flags:
       --annotation stringArray   annotation key=value (repeatable, free text)
@@ -507,7 +508,7 @@ Flags:
       --note string              free-text note recorded with the change
       --reason string            reason_key from the project config
       --request-id string        idempotency key, a UUID (default: generated)
-      --workflow stringArray     workflow to attach to (repeatable)
+      --workflow string          workflow the task belongs to
 ```
 
 ### openetl task delete
@@ -554,7 +555,7 @@ Flags:
       --page-size int       items per page (server default 50, max 1000)
       --page-token string   continue from a next_page_token
       --show-deleted        include soft-deleted items
-      --workflow string     only tasks attached to this workflow
+      --workflow string     only tasks of this workflow
 ```
 
 ### openetl task restore

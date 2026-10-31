@@ -65,7 +65,7 @@ server except for the optional probe; documented commands are checked with `--he
 | 16 | `docs/m0-naming-spec.md` | pointed to a non-existent `./contract.txt`; "100MB" cap (also `docs/design.md`) is 100 MiB = 104857600 bytes | fixed |
 | 17 | `workflow_stages`, `open_items` | expose rows of soft-deleted workflows (and entities without any event) that `workflows` hides | fixed (migration 0006) |
 | 18 | `open_items` | has a row with all counts 0 for a workflow whose only open comments are notes, although the view is documented as "unresolved issues, risks and questions" | fixed (migration 0006) |
-| 19 | `tasks.primary_workflow_id` | `SELECT ... LIMIT 1` without `ORDER BY` over the task's `in.<id> = primary` keys: arbitrary when legacy or imported data carries two primaries | fixed (migration 0006 and `DUPLICATE_PRIMARY`) |
+| 19 | `tasks.primary_workflow_id` | `SELECT ... LIMIT 1` without `ORDER BY` over the task's `in.<id> = primary` keys: arbitrary when legacy or imported data carries two primaries | fixed (migration 0006 and `DUPLICATE_PRIMARY`), then removed with the multi-link model: a task has one workflow (migration 0007, `tasks.workflow_id`) |
 | 20 | views vs connection collation | literals in the views take the collation of the connection that ran the migration (`utf8mb4_0900_ai_ci`); a client connecting with `utf8mb4_general_ci` (for example `mysql --default-character-set=utf8mb4`) gets error 1267 on `WHERE health = 'blocked'` | fixed (migration 0006, explicit collations; store test) |
 
 By area: OpenAPI/contract 6 (1 fixed by its owner), SQL 3 (2 accepted), scripts 1, Skills 2 fixed, README/docs 5 (all fixed except ADR 0008), views 3 reported, one environment fragility.

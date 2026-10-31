@@ -45,8 +45,20 @@ spec say what the server already did, or retire a field that never worked:
 | C1 | `QueryRequest.page_size.maximum` 10000 -> 1000 (also `openetl query --help`) | the server always clamped to 1000 |
 | C2 | `QueryRequest.as_of` removed, and the `--as-of` flag of the query command removed | every request that set it was refused with `AS_OF_UNSUPPORTED`; a body that still carries it is still refused with that reason. `listEvents` keeps `as_of` |
 | C3 | diff `changes[].kind` values `source`/`fill`/`conflict` -> `SOURCE`/`FILL`/`CONFLICT` (+ `KIND_UNSPECIFIED`), server and CLI output changed with it | UPPER_SNAKE rule of `docs/m0-naming-spec.md`; consumers of `openetl import diff` must compare upper case (documented in `docs/import-format.md`, `docs/cli-import.md`) |
-| C4 | error description lists `ENTITY_DELETED` (FAILED_PRECONDITION) and `DUPLICATE_PRIMARY` (INVALID_ARGUMENT) | new refusals of INV-26 and INV-27 (writes to a soft-deleted entity, a second primary workflow link); documentation only |
+| C4 | error description lists `ENTITY_DELETED` (FAILED_PRECONDITION) | new refusal of INV-26 (writes to a soft-deleted entity); documentation only (`DUPLICATE_PRIMARY`, listed here before, was removed again by C6) |
 | C5 | `createWorkflow ?workflow_id=` / `createTask ?task_id=` unchanged in the spec ("reserved, any value is rejected with CLIENT_ID_UNSUPPORTED", which is what the server does); ADR 0009 now says "deviates", `openetl workflow create --id` help says reserved | no spec change needed, docs aligned |
+
+### 2.1c Deliberate incompatible changes of the product decisions (baseline refreshed)
+
+Pre-release, no production data: these change the contract on purpose and `api/openapi.baseline.yaml` was copied from `api/openapi.yaml` after `oasdiff breaking` listed them.
+
+| # | Change | Decision |
+| --- | --- | --- |
+| C6 | `Task.workflows[]` (`TaskMembership`: `workflow`, `primary`) replaced by one `Task.workflow` (resource name, required on create); `AssignTaskRequest.membership` removed, `:assign` means "move this task to workflow X"; list filter `workflows.workflow = "..."` is now `workflow = "..."`; error `DUPLICATE_PRIMARY` / `MULTIPLE_PRIMARY` removed; CLI `task create --workflow` takes exactly one value and is required, `task assign` has no `--membership` | a task belongs to exactly one workflow (INV-27) |
+| C7 | SQL view `tasks.primary_workflow_id` renamed `tasks.workflow_id` (migration 0007); stored task key `in.<workflow>` replaced by `workflow` | same |
+| C8 | `MutationOptions.evidence_attachments` added (optional, used by `advanceStage`, `regressStage`, `setScope`, `updateWorkflow`); new FAILED_PRECONDITION reasons `EVIDENCE_REQUIRED_FOR_OVERRIDE`, `REGRESS_LATER_STAGES_PASSED`, `PARENT_DELETED`; events of an override carry `override.<key>` deltas | admin override needs evidence (INV-29); regress refuses to leave later stages PASSED (INV-31); cascade (INV-30) |
+| C9 | A workflow delete/undelete writes one extra event per task (`cascade` key); a task can no longer be created in or moved to a deleted workflow (was WORKFLOW_NOT_FOUND on create, now ENTITY_DELETED) | INV-30 |
+| C10 | Filters: no implicit AND, a bare juxtaposition is INVALID_ARGUMENT/AMBIGUOUS_FILTER (was accepted as AND) | backlog A-6 |
 
 ### 2.2 Linter findings that are ignored on purpose (`api/vacuum-ruleset.yaml`)
 

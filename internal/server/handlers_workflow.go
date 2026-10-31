@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -275,6 +276,9 @@ func (s *Server) updateWorkflow(q *request, id int64) error {
 		}
 		return out, nil
 	}
+	if err := s.evidence(q, &o, id, body.EvidenceAttachments); err != nil {
+		return err
+	}
 	res, err := s.apply(q, "workflow", id, o, plan, timeZero)
 	if err != nil {
 		return err
@@ -341,12 +345,10 @@ func (s *Server) advanceStage(q *request, id int64) error {
 	}
 	// evidence_attachments must be attachments of this workflow; they are recorded on the event
 	// as evidence.<stage> (a list of attachment resource names) next to the stage change.
-	var evidence []string
-	if body.EvidenceAttachments != nil && len(*body.EvidenceAttachments) > 0 {
-		if evidence, err = s.Store.ResolveEvidence(q.r.Context(), q.pr.project(), id, *body.EvidenceAttachments); err != nil {
-			return err
-		}
+	if err := s.evidence(q, &o, id, body.EvidenceAttachments); err != nil {
+		return err
 	}
+	evidence := o.Evidence
 	plan := func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
 		ch := []store.PlannedChange{{Key: "stage." + stage, New: strRaw(core.StatePass)}}
 		if len(evidence) > 0 && core.Scalar(cur.Vals["stage."+stage]) != core.StatePass {
@@ -376,16 +378,45 @@ func (s *Server) regressStage(q *request, id int64) error {
 	if o.Reason == "" {
 		return core.NewError(core.StatusFailedPrecondition, "REASON_REQUIRED", "regressing a stage requires a reject reason").With("required_kind", core.KindReject)
 	}
+	cfg, err := s.Store.LoadConfig(q.r.Context())
+	if err != nil {
+		return err
+	}
 	plan := func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
 		var out []store.PlannedChange
+		reopen := map[string]bool{}
 		for _, st := range body.Stages {
 			st = strings.ToLower(strings.TrimSpace(st))
 			if v, _ := core.Str(cur.Vals["stage."+st]); v != core.StatePass {
 				return nil, core.NewError(core.StatusFailedPrecondition, "NOT_REGRESSIBLE", "stage %q is not PASSED", st).With("stage", st)
 			}
+			reopen[st] = true
 			out = append(out, store.PlannedChange{Key: "stage." + st, New: strRaw(core.StateOpen)})
 		}
+		// no cascade: a later stage left PASSED would sit behind an open one, and reopening it is the
+		// other side's call (rule table, per stage), so the caller must name every stage it reopens
+		var later []string
+		for _, def := range cfg.Stages {
+			if v, _ := core.Str(cur.Vals["stage."+def.Key]); v != core.StatePass || reopen[def.Key] {
+				continue
+			}
+			for st := range reopen {
+				if cfg.StageSeq(st) < def.Seq {
+					later = append(later, def.Key)
+					break
+				}
+			}
+		}
+		if len(later) > 0 {
+			return nil, core.NewError(core.StatusFailedPrecondition, "REGRESS_LATER_STAGES_PASSED",
+				"regressing %s would leave later stage(s) %s PASSED; include them in stages (reopening them is subject to the rules of their own side)",
+				strings.Join(sortedKeys(reopen), ", "), strings.Join(later, ", ")).
+				With("stages", strings.Join(later, ","))
+		}
 		return out, nil
+	}
+	if err := s.evidence(q, &o, id, body.EvidenceAttachments); err != nil {
+		return err
 	}
 	res, err := s.apply(q, "workflow", id, o, plan, timeZero)
 	if err != nil {
@@ -433,6 +464,9 @@ func (s *Server) setScope(q *request, id int64) error {
 	default:
 		return invalid("INVALID_SCOPE", "scope must be IN_SCOPE or OUT_OF_SCOPE")
 	}
+	if err := s.evidence(q, &o, id, body.EvidenceAttachments); err != nil {
+		return err
+	}
 	res, err := s.apply(q, "workflow", id, o, plan, timeZero)
 	if err != nil {
 		return err
@@ -463,6 +497,15 @@ func (s *Server) setDeleted(q *request, id int64, typ string, del bool) error {
 		return s.workflowResult(q, res, o)
 	}
 	return s.respond(q, s.Store.PreviewTask(q.pr.project(), res.After))
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func derefMap[M ~map[string]string](p *M) map[string]string {

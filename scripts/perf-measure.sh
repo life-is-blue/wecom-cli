@@ -25,4 +25,4 @@ done
 timeit "stage_distribution (rows)" "SELECT stage, health, workflows FROM stage_distribution ORDER BY stage, health"
 timeit "open_items (rows)" "SELECT COUNT(*), SUM(open_issues) FROM open_items"
 timeit "workflows page of 100" "SELECT id, code, name, current_stage, health FROM workflows ORDER BY id LIMIT 100"
-timeit "tasks page of 100" "SELECT id, code, name, primary_workflow_id FROM tasks ORDER BY id LIMIT 100"
+timeit "tasks page of 100" "SELECT id, code, name, workflow_id FROM tasks ORDER BY id LIMIT 100"

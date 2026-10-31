@@ -76,17 +76,17 @@ func TestQueryGuardBypasses(t *testing.T) {
 func TestQueryGuardAccepts(t *testing.T) {
 	good := []string{
 		"SELECT stage, health, workflows FROM stage_distribution",
-		"SELECT w.id, t.id FROM workflows w JOIN tasks t ON t.primary_workflow_id = w.id WHERE w.name LIKE 'a;b%' ORDER BY 1 LIMIT 5;",
+		"SELECT w.id, t.id FROM workflows w JOIN tasks t ON t.workflow_id = w.id WHERE w.name LIKE 'a;b%' ORDER BY 1 LIMIT 5;",
 		"select count(*) from WORKFLOWS where health = 'blocked'",
 		"SELECT * FROM `workflows`",
-		"SELECT w.id FROM workflows AS w LEFT JOIN tasks AS t ON (t.primary_workflow_id = w.id) WHERE w.id IN (1,2,3)",
+		"SELECT w.id FROM workflows AS w LEFT JOIN tasks AS t ON (t.workflow_id = w.id) WHERE w.id IN (1,2,3)",
 		"SELECT stage, COUNT(*) c, COALESCE(MAX(id), 0) FROM tasks GROUP BY stage HAVING COUNT(*) > 1 ORDER BY c DESC",
 		"SELECT CAST(id AS CHAR), JSON_UNQUOTE(JSON_EXTRACT(attrs, '$.a')) FROM workflows",
 		"SELECT 1",
-		"SELECT a.id FROM workflows a JOIN tasks b ON b.primary_workflow_id = a.id AND b.id > 0 JOIN events e ON e.workflow_id = a.id",
+		"SELECT a.id FROM workflows a JOIN tasks b ON b.workflow_id = a.id AND b.id > 0 JOIN events e ON e.workflow_id = a.id",
 		"SELECT a.id FROM workflows a JOIN tasks b USING (project_id)",
-		"SELECT a.id FROM workflows a LEFT JOIN tasks b ON a.id = b.primary_workflow_id OR b.id = a.id",
-		"SELECT a.id FROM workflows a INNER JOIN tasks `b` ON `b`.primary_workflow_id = a.id WHERE 1 = 1",
+		"SELECT a.id FROM workflows a LEFT JOIN tasks b ON a.id = b.workflow_id OR b.id = a.id",
+		"SELECT a.id FROM workflows a INNER JOIN tasks `b` ON `b`.workflow_id = a.id WHERE 1 = 1",
 	}
 	for _, q := range good {
 		out, err := GuardQuery(q, 7)

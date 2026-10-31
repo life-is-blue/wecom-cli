@@ -93,7 +93,7 @@ sorted by `source.reference`.
 ### Tasks
 
 Tasks are sent as `ImportRow.tasks` (`{source:{reference,row_hash}, data:{display_name,labels,annotations,assignees}}`, see
-`docs/import-format.md`); the server creates them with a primary link to their workflow.
+`docs/import-format.md`); the server creates them in their workflow (a task belongs to exactly one).
 
 * **Nested** (`tasks.from`): NDJSON, or a column holding JSON text (e.g. a mysql JSON column). Each element is an object, e.g.
   `{"id":"t-1","title":"extract","type":"sql"}`; mapped with `reference: id`, `name: title`, `labels: {kind: type}`.

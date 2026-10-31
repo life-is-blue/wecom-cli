@@ -29,10 +29,10 @@ func TestCheckRulesUnderscoreNotWildcard(t *testing.T) {
 	cfg := Config{Rules: []Rule{{"stage.dual_run", sp("pass"), "delivery", nil}}}
 	in := Input{Cfg: cfg, Actor: Actor{Account: "x", Side: SideCustomer, Role: RoleEditor, Channel: ChannelAPI}}
 	// customer may not set stage.dual_run, but stage.dualXrun is not covered by any rule
-	if err := checkRules(in, Change{Key: "stage.dual_run", New: JSON("pass")}, nil); err == nil {
+	if _, err := checkRules(in, Change{Key: "stage.dual_run", New: JSON("pass")}, nil); err == nil {
 		t.Error("customer must be denied on stage.dual_run")
 	}
-	if err := checkRules(in, Change{Key: "stage.dualXrun", New: JSON("pass")}, nil); err != nil {
+	if _, err := checkRules(in, Change{Key: "stage.dualXrun", New: JSON("pass")}, nil); err != nil {
 		t.Errorf("look-alike key must be unconstrained: %v", err)
 	}
 }

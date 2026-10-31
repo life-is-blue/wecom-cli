@@ -539,7 +539,7 @@ func TestQueryGuard(t *testing.T) {
 	}
 	good := []string{
 		"SELECT stage, health, workflows FROM stage_distribution",
-		"SELECT w.id, t.id FROM workflows w JOIN tasks t ON t.primary_workflow_id = w.id WHERE w.name LIKE 'a;b%' ORDER BY 1 LIMIT 5;",
+		"SELECT w.id, t.id FROM workflows w JOIN tasks t ON t.workflow_id = w.id WHERE w.name LIKE 'a;b%' ORDER BY 1 LIMIT 5;",
 		"select count(*) from workflows where health = 'blocked'",
 	}
 	for _, q := range good {

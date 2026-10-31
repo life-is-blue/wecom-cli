@@ -20,7 +20,7 @@ openetl me
 openetl workflow list --filter 'assignees.dev_owner = "accounts/alice" AND scope = IN_SCOPE' --page-size 100 --page-count 5
 ```
 
-`accounts/alice` 用 `openetl me` 返回的 `account`。按阶段和健康度总览：
+`accounts/alice` 用 `openetl me` 返回的 `account`。`--filter` 里两个条件之间必须显式写 `AND` 或 `OR`，只用空格并列会报 `AMBIGUOUS_FILTER`（没有隐式 AND）；同一层混用 AND 与 OR 也会报同样的错，请加括号，例如 `(a = 1 AND b = 2) OR c = 3`。按阶段和健康度总览：
 
 ```bash
 openetl query "SELECT code, name, current_stage, health, open_issues, open_risks FROM workflows WHERE scope = 'in' AND current_stage IS NOT NULL ORDER BY health DESC, current_stage" --page-count 5
@@ -30,7 +30,7 @@ openetl query "SELECT stage, health, workflows FROM stage_distribution"
 「未完成」指 `scope = 'in' AND current_stage IS NOT NULL`（范围内且还有没通过的阶段）。要找「活最多」的工作流，按任务数排序（没有任务的工作流也会出现，任务数为 0）：
 
 ```bash
-openetl query "SELECT w.code, w.name, w.current_stage, COUNT(t.id) AS task_count FROM workflows w LEFT JOIN tasks t ON t.primary_workflow_id = w.id WHERE w.scope = 'in' AND w.current_stage IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(w.assignees, '$.dev_owner')) = 'alice' GROUP BY w.code, w.name, w.current_stage ORDER BY task_count DESC" --page-count 5
+openetl query "SELECT w.code, w.name, w.current_stage, COUNT(t.id) AS task_count FROM workflows w LEFT JOIN tasks t ON t.workflow_id = w.id WHERE w.scope = 'in' AND w.current_stage IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(w.assignees, '$.dev_owner')) = 'alice' GROUP BY w.code, w.name, w.current_stage ORDER BY task_count DESC" --page-count 5
 ```
 
 查询不支持子查询和 EXISTS，需要时用 JOIN 加 GROUP BY。健康度在视图里是小写 `ok|at_risk|blocked`，在 `workflow get` 的 JSON 里是 `NORMAL|AT_RISK|BLOCKED`，含义相同。
@@ -51,7 +51,10 @@ openetl stage advance WF-000123 --stage development --note "代码已合并" --e
 openetl stage advance WF-000123 --stage development --note "代码已合并" --etag <etag>
 ```
 
-预演通过后再执行。需要证据时先 `comment add --attach`，再用 `--evidence <附件资源名>` 引用。阶段标记为不适用（NOT_APPLICABLE）需要 `not_applicable` 类 reason，M1 的 CLI 未提供该动作，遇到时告知用户由管理员处理。
+预演通过后再执行。需要证据时先 `comment add --attach`，再用 `--evidence <附件资源名>` 引用。
+**管理员代对方推进（override）**：规则表把某些阶段留给另一方（例如 `accept` 归客户方）。`admin` 角色可以代对方操作，但**必须带证据**：先上传证据 `openetl comment add WF-000123 --kind note --body "客户邮件确认验收" --attach ./mail.pdf`，从返回里取附件资源名，再执行 `openetl stage advance WF-000123 --stage accept --evidence <附件资源名> --note "客户邮件确认"`。不带证据报 `EVIDENCE_REQUIRED_FOR_OVERRIDE`，错误信息会写明归属的一方。`stage regress`、`scope set` 同样接受 `--evidence`。事件仍记录真实操作人和所属方，并多一条 `override.<键>` 记录，可用 `openetl query "SELECT event_id, actor, side, k, new_v FROM events WHERE k LIKE 'override.%'"` 列出全部代操作。editor 不能代对方操作（`SIDE_NOT_ALLOWED`）。
+
+阶段标记为不适用（NOT_APPLICABLE）需要 `not_applicable` 类 reason，M1 的 CLI 未提供该动作，遇到时告知用户由管理员处理。
 
 ## 流程 3：记录问题或风险
 
@@ -75,7 +78,7 @@ openetl stage regress WF-000123 --stage accept --stage verify --reason rej_row_c
 openetl stage regress WF-000123 --stage accept --stage verify --reason rej_row_count --note "行数差 1.2%" --etag <etag>
 ```
 
-只有当前为 PASSED 的阶段才能回退（否则 `NOT_REGRESSIBLE`）。reason 不确定时，先查有效的原因键，再向用户确认，不要猜：`openetl config get` 任何成员可读，看 `reasons` 里 `kind` 为 `REJECT` 的键（回退用）、`DISCARD`（移出范围用）、`NOT_APPLICABLE`（阶段不适用用）。键写错时报错 `UNKNOWN_REASON` 会直接列出可用的键。回退成功后，该阶段在 `events` 视图里表现为 `k = 'stage.verify'` 的新值 `open`，`reason_key` 列不一定有值，需要原因时看事件的备注。
+只有当前为 PASSED 的阶段才能回退（否则 `NOT_REGRESSIBLE`）。回退不会自动连带后面的阶段：如果回退后会留下更靠后的 PASSED 阶段，报 `REGRESS_LATER_STAGES_PASSED`，错误信息列出需要一起回退的阶段，请把它们都写进 `--stage`（后面阶段的回退按各自归属方的规则校验，可能需要对方操作）。reason 不确定时，先查有效的原因键，再向用户确认，不要猜：`openetl config get` 任何成员可读，看 `reasons` 里 `kind` 为 `REJECT` 的键（回退用）、`DISCARD`（移出范围用）、`NOT_APPLICABLE`（阶段不适用用）。键写错时报错 `UNKNOWN_REASON` 会直接列出可用的键。回退成功后，该阶段在 `events` 视图里表现为 `k = 'stage.verify'` 的新值 `open`，`reason_key` 列不一定有值，需要原因时看事件的备注。
 
 ## 流程 5：调整范围
 
@@ -114,11 +117,9 @@ openetl workflow delete WF-000123 --note "重复登记" --etag <etag>
 openetl workflow restore WF-000123 --etag <etag>
 openetl task create --name extract_orders --workflow WF-000123 --label kind=sql --dry-run
 openetl task list --workflow WF-000123 --page-size 100
-openetl task assign TK-000456 --workflow WF-000124 --membership shared
-openetl task assign TK-000456 --workflow WF-000124 --membership primary
-openetl task assign TK-000456 --workflow WF-000124 --membership none
+openetl task assign TK-000456 --workflow WF-000124
 openetl task delete TK-000456 --etag <etag>
 openetl task restore TK-000456 --etag <etag>
 ```
 
-任务可以同时属于多个工作流，其中至多一个是主工作流（`primary`，创建时第一个 `--workflow`）；`--membership none` 表示脱离该工作流。删除是软删除，可 `restore` 恢复；已删除的工作流不会出现在 `workflows` 视图里，但它的任务和评论仍在各自视图中。
+每个任务属于且只属于一个工作流：创建时必须给 `--workflow`（工作流必须存在且未删除），`task assign` 表示把任务移到另一个工作流（目标已删除时报 `ENTITY_DELETED`）。删除是软删除，可 `restore` 恢复。删除工作流会在同一事务里连带软删除它的未删除任务（每个任务一条事件，备注写明级联）；恢复工作流只恢复这次被连带删除的任务，之前单独删除的任务仍保持删除。工作流已删除时恢复其任务报 `PARENT_DELETED`，请先恢复工作流。已删除的工作流和它的任务都不会出现在 `workflows` / `tasks` 视图里，评论视图同样不含已删除工作流的评论。

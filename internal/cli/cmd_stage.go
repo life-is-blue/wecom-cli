@@ -44,14 +44,21 @@ func (a *App) stageAdvance() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&stage, "stage", "", "stage key, e.g. development")
-	cmd.Flags().StringArrayVar(&evidence, "evidence", nil, "attachment resource name as evidence (repeatable)")
+	bindEvidence(cmd, &evidence)
 	w.bind(cmd)
 	return cmd
+}
+
+// bindEvidence adds --evidence: attachments of the workflow that prove a change. An admin who acts for
+// the other side (a stage or scope change the rule table reserves for it) must pass them.
+func bindEvidence(cmd *cobra.Command, v *[]string) {
+	cmd.Flags().StringArrayVar(v, "evidence", nil, "attachment resource name as evidence (repeatable); required when an admin acts for the other side")
 }
 
 func (a *App) stageRegress() *cobra.Command {
 	var w writeFlags
 	var stages []string
+	var evidence []string
 	cmd := &cobra.Command{
 		Use: "regress WF --stage STAGE [--stage STAGE] --reason REJECT_REASON", Short: "Set PASSED stages back to OPEN with a reject reason",
 		Args: exactArgs(1),
@@ -75,6 +82,9 @@ func (a *App) stageRegress() *cobra.Command {
 			}
 			body := api.RegressStageRequest{Stages: stages, Reason: w.reason,
 				Etag: o.Etag, Note: o.Note, RequestId: o.RequestId, ValidateOnly: o.ValidateOnly}
+			if len(evidence) > 0 {
+				body.EvidenceAttachments = &evidence
+			}
 			out, err := a.call("POST", path+":regressStage", nil, body)
 			if err != nil {
 				return err
@@ -82,7 +92,8 @@ func (a *App) stageRegress() *cobra.Command {
 			return a.emit(out)
 		},
 	}
-	cmd.Flags().StringSliceVar(&stages, "stage", nil, "stage to set back to OPEN (repeatable)")
+	cmd.Flags().StringSliceVar(&stages, "stage", nil, "stage to set back to OPEN (repeatable); name every PASSED stage after it too")
+	bindEvidence(cmd, &evidence)
 	w.bind(cmd)
 	return cmd
 }
@@ -94,6 +105,7 @@ func (a *App) scopeCmd() *cobra.Command {
 func (a *App) scopeSet() *cobra.Command {
 	var w writeFlags
 	var to, into string
+	var evidence []string
 	cmd := &cobra.Command{
 		Use: "set WF --to in|out [--reason R] [--into WF]", Short: "Set scope; out needs a discard reason, `--reason merged` needs --into",
 		Args: exactArgs(1),
@@ -117,6 +129,9 @@ func (a *App) scopeSet() *cobra.Command {
 			}
 			body := api.SetScopeRequest{Scope: scope,
 				Etag: o.Etag, Note: o.Note, Reason: o.Reason, RequestId: o.RequestId, ValidateOnly: o.ValidateOnly}
+			if len(evidence) > 0 {
+				body.EvidenceAttachments = &evidence
+			}
 			if into != "" {
 				n, err := a.fullName("workflows", into)
 				if err != nil {
@@ -133,6 +148,7 @@ func (a *App) scopeSet() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&to, "to", "", "in or out")
 	cmd.Flags().StringVar(&into, "into", "", "target workflow when --reason merged")
+	bindEvidence(cmd, &evidence)
 	w.bind(cmd)
 	return cmd
 }

@@ -34,6 +34,9 @@ type ChangeRequest struct {
 	// Fingerprint identifies the request payload (hash, caller-computed). With RequestID it makes a
 	// reused request_id with a different payload fail instead of silently replaying the first result.
 	Fingerprint string
+	// Evidence are validated attachment names (Store.ResolveEvidence). Needed when an admin sets a
+	// key the rule table reserves for the other side; Validate then records the override on the event.
+	Evidence []string
 	// Plan turns the current state into the key changes. It runs inside the transaction after the
 	// entity row is locked, so it sees the latest committed values.
 	Plan func(cur *Entity, env core.Env) ([]PlannedChange, error)
@@ -190,13 +193,17 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 	}
 
 	// 5. validation (rules + built-ins)
-	if err := core.Validate(core.Input{Cfg: cfg, Actor: req.Actor, EntityTyp: req.EntityType, EntityID: req.EntityID,
-		ReasonKey: req.ReasonKey, Note: req.Note, Current: cur.Vals, Changes: changes, Env: env}); err != nil {
+	overrides, err := core.Validate(core.Input{Cfg: cfg, Actor: req.Actor, EntityTyp: req.EntityType, EntityID: req.EntityID,
+		ReasonKey: req.ReasonKey, Note: req.Note, Current: cur.Vals, Changes: changes, Env: env, Evidence: req.Evidence})
+	if err != nil {
 		return nil, err
 	}
 	if env.err != nil {
 		return nil, env.err
 	}
+	// an override record rides on the event even when its value equals the previous one: it states
+	// that THIS event was made for the other side (the no-op rule above does not apply to it)
+	changes = append(changes, overrides...)
 
 	// 6. write event + deltas
 	eventTime := req.EventTime.UTC()
@@ -251,6 +258,15 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 	// entity_latest is a cache of delta: it moves in the same transaction (rolled back with it)
 	if err := upsertLatest(ctx, tx, latest); err != nil {
 		return nil, err
+	}
+
+	// 6b. a workflow delete/undelete takes its tasks along, in the same transaction
+	for _, c := range changes {
+		if req.EntityType == "workflow" && c.Key == "deleted" {
+			if err := s.cascadeTasks(ctx, tx, req, entityID, eventID, eventTime, core.Bool(c.New)); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// 7. resulting state

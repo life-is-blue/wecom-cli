@@ -99,9 +99,9 @@
     "type": "datetime"
    },
    {
-    "name": "primary_workflow_id",
+    "name": "workflow_id",
     "type": "bigint",
-    "note": "the task's primary workflow (lowest id if legacy data holds two)"
+    "note": "the workflow the task belongs to (exactly one)"
    }
   ]
  },

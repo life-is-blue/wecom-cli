@@ -13,7 +13,7 @@ development, deployment, verify, accept, dual_run, cutover (NOT developer_valida
 ## Resource names (Google AIP-122)
 - projects/{project}                                  e.g. projects/acme-dw  (user-chosen lowercase slug)
 - projects/{project}/workflows/{workflow}             e.g. wf-000123   (display code WF-000123, parsed case-insensitively)
-- projects/{project}/tasks/{task}                     e.g. tk-004567   (belongs to workflows via `workflows` field; many, one primary)
+- projects/{project}/tasks/{task}                     e.g. tk-004567   (belongs to exactly one workflow: the `workflow` field, resource name; changed only by `:assign`)
 - projects/{project}/workflows/{workflow}/comments/{comment}
 - projects/{project}/workflows/{workflow}/attachments/{attachment}
 - projects/{project}/workflows/{workflow}/events/{event}   (read-only audit)
@@ -48,7 +48,7 @@ development, deployment, verify, accept, dual_run, cutover (NOT developer_valida
           POST /v1/{name}:regressStage {stages[], reason (required), ...}
           POST /v1/{name}:setScope {scope, reason (required when OUT_OF_SCOPE), merged_into?, ...}
           POST /v1/{name}:resolve   (comments)   POST /v1/{name}:reopen
-- Same pattern for tasks (create/update/delete/undelete/list/get, :assign to workflow).
+- Same pattern for tasks (create/update/delete/undelete/list/get, :assign = move the task to another workflow). Deleting a workflow soft-deletes its tasks in the same transaction (docs/invariants.md INV-30).
 - Comments: create/list/get under workflow; attachments: POST /v1/{parent}/attachments:initUpload -> presigned URL,
   then POST /v1/{parent}/attachments (metadata: filename,size,sha256,storage_key); GET /v1/{name}:download -> URL. Cap 100 MiB (104857600 bytes).
 - Events: list/get only (GET /v1/{parent}/events?filter=&as_of=)

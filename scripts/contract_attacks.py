@@ -67,13 +67,13 @@ def main():
 
     # ---- A2: parenthesised / multi-table FROM
     paren = ["SELECT name FROM (workflows)", "SELECT name FROM (workflows) w", "SELECT w.name FROM workflows w, tasks t",
-             "SELECT w.name FROM (workflows w JOIN tasks t ON w.id = t.primary_workflow_id)",
-             "SELECT w.name FROM workflows w JOIN (tasks) t ON w.id = t.primary_workflow_id",
+             "SELECT w.name FROM (workflows w JOIN tasks t ON w.id = t.workflow_id)",
+             "SELECT w.name FROM workflows w JOIN (tasks) t ON w.id = t.workflow_id",
              "SELECT w.name FROM workflows w CROSS JOIN tasks t", "SELECT w.name FROM workflows w JOIN tasks t ON 1=1",
              "SELECT w.name FROM workflows w JOIN tasks t ON 1", "SELECT w.name FROM workflows w NATURAL JOIN tasks t"]
     res = [(s, q("dave", "pb", s).status_code) for s in paren]
     verdict("A2", all(c == 400 for _, c in res), f"statuses={[c for _, c in res]} for {len(paren)} statements")
-    ok = q("dave", "pb", "SELECT w.name, t.name FROM workflows w JOIN tasks t ON w.id = t.primary_workflow_id")
+    ok = q("dave", "pb", "SELECT w.name, t.name FROM workflows w JOIN tasks t ON w.id = t.workflow_id")
     verdict("A2-control", ok.status_code == 200, f"legitimate join still works -> {ok.status_code}")
 
     # ---- A3: cross-project token / membership escalation
