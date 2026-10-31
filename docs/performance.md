@@ -89,3 +89,23 @@ Store/API level (`Store.Query` adds the project filter, which is why its "before
 Nothing is above 1 s. The slowest remaining items are the filtered workflow list (140 ms) and the view
 counts that must scan every workflow (about 100 ms): they are linear in the number of entities.
 `workflow get` spends most of its 45 ms in `v_open_items`, which aggregates all comments of the project.
+
+## Verified on MySQL 8.0.46 (official `mysql:8.0` image)
+
+Same seed as above (3000 workflows, 10000 tasks, 6000 comments, 66793 events). Timings include roughly
+0.25 s of `docker exec` overhead per statement.
+
+| Statement | Schema before `entity_latest` (0001-0003) | With `entity_latest` (0004) |
+|---|---|---|
+| `COUNT(*)` workflows | aborted at 40 s | 0.45 s |
+| `COUNT(*)` tasks | aborted at 40 s | 0.47 s |
+| `COUNT(*)` workflow_stages | aborted at 40 s | 0.25 s |
+| `COUNT(*)` events / comments | 0.26 / 0.52 s | 0.27 / 0.30 s |
+| stage_distribution (rows) | 0.97 s | 0.53 s |
+| workflows page of 100 (SQL) | 0.92 s | 0.46 s |
+
+API level (no docker overhead), medians: workflows list page of 100 69 ms; filter by stage+health 215 ms;
+workflow get 39 ms; tasks list page 9 ms; comments list 47 ms; events list 73 ms.
+Conclusion: the slow-view problem was not specific to MariaDB; the cache table is required on MySQL 8.0 too.
+`openetl-gateway admin verify-latest` reports `entity_latest matches delta` after migrating the seeded database.
+Full test suite (`go test -count=1 -p 1 ./...`) and `scripts/demo.sh` also pass on MySQL 8.0.46.

@@ -59,5 +59,5 @@ Other switches: `OPENETL_PUBLIC_URL` (base of signed blob URLs), `OPENETL_TRUST_
 ## Status
 
 M0 (contract) done. M1 (gateway, CLI, first Skills) done and covered by `scripts/demo.sh`;
-verified on MariaDB 10.11 only, not yet on MySQL 8.0. Not yet built: attachments, import jobs,
+verified on MySQL 8.0.46 and MariaDB 10.11 (`scripts/dev-mysql.sh` starts a MySQL 8.0 container). Not yet built: attachments, import jobs,
 members/tokens/config endpoints (M2). Design: see `docs/design.md`.
