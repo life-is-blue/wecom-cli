@@ -38,7 +38,7 @@ paths:
 
   # ---------------------------------------------------------------- workflows
   /v1/projects/{project}/workflows:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     get:
       tags: [Workflows]
       operationId: listWorkflows
@@ -75,7 +75,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     get:
       tags: [Workflows]
       operationId: getWorkflow
@@ -112,7 +112,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}:undelete:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Workflows]
       operationId: undeleteWorkflow
@@ -123,7 +123,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}:advanceStage:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Workflows]
       operationId: advanceStage
@@ -167,7 +167,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}:regressStage:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Workflows]
       operationId: regressStage
@@ -181,7 +181,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}:setScope:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Workflows]
       operationId: setScope
@@ -198,7 +198,7 @@ paths:
 
   # -------------------------------------------------------------------- tasks
   /v1/projects/{project}/tasks:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     get:
       tags: [Tasks]
       operationId: listTasks
@@ -232,7 +232,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/tasks/{task}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/TaskP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
     get:
       tags: [Tasks]
       operationId: getTask
@@ -266,7 +266,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/tasks/{task}:undelete:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/TaskP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
     post:
       tags: [Tasks]
       operationId: undeleteTask
@@ -277,7 +277,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/tasks/{task}:assign:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/TaskP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
     post:
       tags: [Tasks]
       operationId: assignTask
@@ -291,7 +291,7 @@ paths:
 
   # ----------------------------------------------------------------- comments
   /v1/projects/{project}/workflows/{workflow}/comments:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     get:
       tags: [Comments]
       operationId: listComments
@@ -320,7 +320,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/comments/{comment}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}, {$ref: '#/components/parameters/CommentP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
     get:
       tags: [Comments]
       operationId: getComment
@@ -328,9 +328,19 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/Comment'}
         default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Comments]
+      operationId: deleteComment
+      summary: Soft-delete a comment (sets delete_time; comments are never edited)
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/comments/{comment}:resolve:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}, {$ref: '#/components/parameters/CommentP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
     post:
       tags: [Comments]
       operationId: resolveComment
@@ -341,7 +351,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/comments/{comment}:reopen:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}, {$ref: '#/components/parameters/CommentP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
     post:
       tags: [Comments]
       operationId: reopenComment
@@ -353,7 +363,7 @@ paths:
 
   # -------------------------------------------------------------- attachments
   /v1/projects/{project}/workflows/{workflow}/attachments:initUpload:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Attachments]
       operationId: initAttachmentUpload
@@ -367,7 +377,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/attachments:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     post:
       tags: [Attachments]
       operationId: createAttachment
@@ -383,7 +393,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/attachments/{attachment}:download:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}, {$ref: '#/components/parameters/AttachmentP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/AttachmentP'}]
     get:
       tags: [Attachments]
       operationId: downloadAttachment
@@ -394,7 +404,7 @@ paths:
 
   # ------------------------------------------------------------------- events
   /v1/projects/{project}/workflows/{workflow}/events:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
     get:
       tags: [Events]
       operationId: listEvents
@@ -411,7 +421,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/workflows/{workflow}/events/{event}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/Workflow'}, {$ref: '#/components/parameters/EventP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/EventP'}]
     get:
       tags: [Events]
       operationId: getEvent
@@ -422,7 +432,7 @@ paths:
 
   # -------------------------------------------------------------------- query
   /v1/projects/{project}:query:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     post:
       tags: [Query]
       operationId: query
@@ -439,7 +449,7 @@ paths:
 
   # --------------------------------------------------------------- importJobs
   /v1/projects/{project}/importJobs:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     post:
       tags: [ImportJobs]
       operationId: createImportJob
@@ -454,7 +464,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/importJobs/{importJob}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/ImportJobP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
     get:
       tags: [ImportJobs]
       operationId: getImportJob
@@ -464,7 +474,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/importJobs/{importJob}:diff:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/ImportJobP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
     get:
       tags: [ImportJobs]
       operationId: diffImportJob
@@ -479,7 +489,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/importJobs/{importJob}:apply:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/ImportJobP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
     post:
       tags: [ImportJobs]
       operationId: applyImportJob
@@ -490,7 +500,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/importJobs/{importJob}:rollback:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/ImportJobP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
     post:
       tags: [ImportJobs]
       operationId: rollbackImportJob
@@ -502,7 +512,7 @@ paths:
 
   # -------------------------------------------------------------------- admin
   /v1/projects/{project}/members:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     get:
       tags: [Admin]
       operationId: listMembers
@@ -515,7 +525,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/members/{account}:
-    parameters: [{$ref: '#/components/parameters/Project'}, {$ref: '#/components/parameters/AccountP'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/AccountP'}]
     put:
       tags: [Admin]
       operationId: setMember
@@ -568,7 +578,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
 
   /v1/projects/{project}/config:
-    parameters: [{$ref: '#/components/parameters/Project'}]
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
     get:
       tags: [Admin]
       operationId: getConfig
@@ -594,8 +604,8 @@ components:
     bearerAuth: {type: http, scheme: bearer, description: 'API token; inherits the member identity (no separate scopes).'}
 
   parameters:
-    Project: {name: project, in: path, required: true, description: 'Project id (lowercase slug).', schema: {type: string, pattern: '^[a-z][a-z0-9-]*$', example: acme-dw}}
-    Workflow: {name: workflow, in: path, required: true, description: 'Workflow id, e.g. wf-000123.', schema: {type: string, example: wf-000123}}
+    ProjectP: {name: project, in: path, required: true, description: 'Project id (lowercase slug).', schema: {type: string, pattern: '^[a-z][a-z0-9-]*$', example: acme-dw}}
+    WorkflowP: {name: workflow, in: path, required: true, description: 'Workflow id, e.g. wf-000123.', schema: {type: string, example: wf-000123}}
     TaskP: {name: task, in: path, required: true, schema: {type: string, example: tk-004567}}
     CommentP: {name: comment, in: path, required: true, schema: {type: string}}
     AttachmentP: {name: attachment, in: path, required: true, schema: {type: string}}
