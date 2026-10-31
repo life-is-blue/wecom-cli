@@ -3,12 +3,17 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +39,12 @@ type Server struct {
 	storOnce sync.Once
 	storErr  error
 	quota    uploadQuota
+
+	// AccessLog, when set, receives one JSON line per request (see metrics.go).
+	AccessLog io.Writer
+	logMu     sync.Mutex
+	metrics   *Metrics
+	mxOnce    sync.Once
 }
 
 // New creates the server handler.
@@ -43,8 +54,6 @@ func New(st *store.Store, lg *log.Logger) *Server {
 	}
 	return &Server{Store: st, Log: lg}
 }
-
-type ctxKey struct{}
 
 // Principal is the authenticated caller, with the membership of the addressed project (if any).
 type Principal struct {
@@ -101,6 +110,9 @@ func (s *Server) writeErr(w http.ResponseWriter, err error) {
 		ce = core.NewError(core.StatusInternal, "INTERNAL", "internal error")
 	}
 	code := httpStatus(ce.Status)
+	if rec, ok := w.(*statusRecorder); ok {
+		rec.reason = ce.Reason
+	}
 	var out api.Error
 	out.Error.Code = code
 	out.Error.Status = api.ErrorErrorStatus(ce.Status)
@@ -125,10 +137,6 @@ func notFound(what string) *core.Error {
 	return core.NewError(core.StatusNotFound, "NOT_FOUND", "%s not found", what)
 }
 
-func unimplemented(what string) *core.Error {
-	return core.NewError(core.StatusUnimplemented, "UNIMPLEMENTED", "%s is not available in this version of the server", what)
-}
-
 // ---------------------------------------------------------------- routing
 
 type request struct {
@@ -138,6 +146,37 @@ type request struct {
 	verb    string
 	project string
 	pr      *Principal
+
+	rawBody bytes.Buffer // body bytes read by decodeBody, for the idempotency fingerprint
+}
+
+// fingerprint identifies the request payload: method, path, query and body, without the fields that
+// may legitimately differ on a retry (request_id, validate_only, etag).
+func (q *request) fingerprint() string {
+	skip := map[string]bool{"request_id": true, "validate_only": true, "etag": true}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s %s", q.r.Method, q.r.URL.Path)
+	qv := q.r.URL.Query()
+	keys := make([]string, 0, len(qv))
+	for k := range qv {
+		if !skip[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(h, "\x00%s=%q", k, qv[k])
+	}
+	var body map[string]any
+	if q.rawBody.Len() > 0 && json.Unmarshal(q.rawBody.Bytes(), &body) == nil {
+		for k := range skip {
+			delete(body, k)
+		}
+		b, _ := json.Marshal(body) // map keys are sorted
+		h.Write([]byte{0})
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
 func splitPath(path string) (segs []string, verb string, ok bool) {
@@ -158,8 +197,8 @@ func splitPath(path string) (segs []string, verb string, ok bool) {
 	return segs, verb, true
 }
 
-// ServeHTTP authenticates and dispatches.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// serveHTTP authenticates and dispatches; ServeHTTP (metrics.go) wraps it with metrics and the access log.
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.Log.Printf("panic: %v\n%s", rec, debug.Stack())
@@ -184,6 +223,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	noteAccount(r, account.UserName)
 	req := &request{w: w, r: r, segs: segs, verb: verb, pr: &Principal{Account: *account, Channel: channelOf(r)}}
 	if segs[0] == "projects" && len(segs) >= 2 {
 		req.project = segs[1]
@@ -405,7 +445,8 @@ const maxBody = 4 << 20
 // decodeBody reads a JSON body into v; an empty body is allowed when optional.
 func (q *request) decodeBody(v any, optional bool) error {
 	body := http.MaxBytesReader(q.w, q.r.Body, maxBody)
-	dec := json.NewDecoder(body)
+	q.rawBody.Reset()
+	dec := json.NewDecoder(io.TeeReader(body, &q.rawBody))
 	err := dec.Decode(v)
 	if err != nil {
 		if errors.Is(err, io.EOF) && optional {
@@ -490,7 +531,7 @@ func (q *request) mutOpts(etag, reason, note *string, requestID *string, validat
 func (s *Server) apply(q *request, typ string, id int64, o mutOpts, plan func(*store.Entity, core.Env) ([]store.PlannedChange, error), eventTime time.Time) (*store.Result, error) {
 	res, err := s.Store.Apply(q.r.Context(), store.ChangeRequest{
 		ProjectID: q.pr.Member.ProjectID, EntityType: typ, EntityID: id, Actor: q.pr.actor(),
-		ReasonKey: o.Reason, Note: o.Note, RequestID: o.RequestID, Etag: o.Etag, ValidateOnly: o.ValidateOnly,
+		ReasonKey: o.Reason, Note: o.Note, RequestID: o.RequestID, Etag: o.Etag, ValidateOnly: o.ValidateOnly, Fingerprint: q.fingerprint(),
 		EventTime: eventTime, Plan: plan,
 	})
 	if err != nil {

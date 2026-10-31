@@ -59,7 +59,7 @@ func TestValidate(t *testing.T) {
 	customer := Actor{Account: "c", Side: "customer", Role: "editor", Channel: "api"}
 	admin := Actor{Account: "x", Side: "delivery", Role: "admin", Channel: "api"}
 	legacy := Actor{Account: "x", Side: "system", Role: "editor", Channel: "legacy"}
-	env := fakeEnv{exists: map[int64]bool{1: true, 2: true, 3: true}, into: map[int64]int64{2: 1}}
+	env := fakeEnv{exists: map[int64]bool{1: true, 2: true, 3: true}, into: map[int64]int64{2: 1, 1: 3}}
 
 	tests := []struct {
 		name   string
@@ -114,6 +114,12 @@ func TestValidate(t *testing.T) {
 			status: StatusFailedPrecondition, code: "REASON_REQUIRED"},
 		{name: "na wrong kind", actor: delivery, reason: "rej_row_count", ch: []Change{{Key: "stage.verify", New: j(`"na"`)}},
 			status: StatusFailedPrecondition, code: "REASON_REQUIRED"},
+		{name: "passed to na with na reason is refused", actor: delivery, reason: "na_manual_trigger", note: "n",
+			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`)},
+			ch:  []Change{{Key: "stage.development", Old: j(`"pass"`), New: j(`"na"`)}}, status: StatusFailedPrecondition, code: "REASON_REQUIRED"},
+		{name: "passed to na with reject reason is refused", actor: delivery, reason: "rej_row_count",
+			cur: map[string]json.RawMessage{"stage.development": j(`"pass"`)},
+			ch:  []Change{{Key: "stage.development", Old: j(`"pass"`), New: j(`"na"`)}}, status: StatusFailedPrecondition, code: "REASON_REQUIRED"},
 		{name: "unknown stage", actor: delivery, ch: []Change{{Key: "stage.nope", New: j(`"pass"`)}}, status: StatusInvalidArgument, code: "UNKNOWN_STAGE"},
 		{name: "unknown reason", actor: delivery, reason: "zzz", ch: []Change{{Key: "attr.a", New: j(`"x"`)}}, status: StatusInvalidArgument, code: "UNKNOWN_REASON"},
 		{name: "inactive reason", actor: delivery, reason: "inactive", ch: []Change{{Key: "attr.a", New: j(`"x"`)}}, status: StatusInvalidArgument, code: "UNKNOWN_REASON"},
@@ -133,6 +139,17 @@ func TestValidate(t *testing.T) {
 			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`3`)}}},
 		{name: "merge cycle via chain", actor: delivery, reason: "merged", id: 1, // 2 -> 1 already; merging 1 into 2 closes a cycle
 			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`2`)}}, status: StatusFailedPrecondition, code: "MERGE_CYCLE"},
+		{name: "merge target zero", actor: delivery, reason: "merged", id: 5,
+			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`0`)}}, status: StatusInvalidArgument, code: "INVALID_VALUE"},
+		{name: "merge target negative", actor: delivery, reason: "merged", id: 5,
+			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`-3`)}}, status: StatusInvalidArgument, code: "INVALID_VALUE"},
+		{name: "merge cycle two hops away", actor: delivery, reason: "merged", id: 3, // 2 -> 1 -> 3 already; 3 into 2 closes it
+			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`2`)}}, status: StatusFailedPrecondition, code: "MERGE_CYCLE"},
+		{name: "merge into chain end is fine", actor: delivery, reason: "merged", id: 5,
+			ch: []Change{{Key: "scope", New: j(`"out"`)}, {Key: "into", New: j(`2`)}}},
+		{name: "retargeting a merge is checked too", actor: delivery, reason: "merged", id: 5, // scope unchanged, only into moves
+			cur: map[string]json.RawMessage{"scope": j(`"out"`), "into": j(`3`)},
+			ch:  []Change{{Key: "into", Old: j(`3`), New: j(`99`)}}, status: StatusInvalidArgument, code: "MERGE_TARGET_INVALID"},
 		{name: "legacy bypasses everything", actor: legacy, ch: []Change{{Key: "stage.cutover", New: j(`"pass"`)}}},
 	}
 	for _, tc := range tests {

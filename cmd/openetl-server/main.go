@@ -9,7 +9,7 @@
 // Environment: OPENETL_DB_DSN (go-sql-driver DSN, required), OPENETL_ADDR (default :8080),
 // OPENETL_QUERY_DSN (optional SELECT-only DSN for the query endpoint), OPENETL_PUBLIC_URL,
 // OPENETL_TRUST_PROXY=1, OPENETL_ALLOW_GLOBAL_CONFIG=1, OPENETL_QUERY_MAX_PER_ACCOUNT, OPENETL_QUERY_MAX_TOTAL,
-// OPENETL_PROJECT_STORAGE_QUOTA_BYTES (see docs/security.md).
+// OPENETL_PROJECT_STORAGE_QUOTA_BYTES (see docs/security.md), OPENETL_ACCESS_LOG=off, OPENETL_METRICS_TOKEN (docs/operations.md).
 package main
 
 import (
@@ -17,13 +17,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/life-is-blue/openetl-cli/db"
 	"github.com/life-is-blue/openetl-cli/internal/server"
 	"github.com/life-is-blue/openetl-cli/internal/store"
 )
@@ -47,6 +50,40 @@ func openStore() (*store.Store, error) {
 	return store.Open(dsn)
 }
 
+// migrate refuses to touch a database that has migrations this binary does not know (a rollback of
+// the binary after an upgrade), then applies the pending ones. See docs/operations.md.
+func migrate(ctx context.Context, st *store.Store) ([]string, error) {
+	known := map[string]bool{}
+	entries, err := fs.ReadDir(db.Migrations, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		known[e.Name()] = true
+	}
+	rows, err := st.DB.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err == nil { // a missing table just means a fresh database
+		defer rows.Close()
+		var unknown []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return nil, err
+			}
+			if !known[v] {
+				unknown = append(unknown, v)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(unknown) > 0 {
+			return nil, fmt.Errorf("database has migrations this binary does not know (%s): it was upgraded by a newer openetl-server; run that version or restore a backup", strings.Join(unknown, ", "))
+		}
+	}
+	return st.Migrate(ctx)
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
 		return usage()
@@ -60,7 +97,7 @@ func run(args []string) error {
 			return err
 		}
 		defer st.Close()
-		applied, err := st.Migrate(context.Background())
+		applied, err := migrate(context.Background(), st)
 		for _, a := range applied {
 			fmt.Println("applied", a)
 		}
@@ -91,7 +128,7 @@ func serve() error {
 		return err
 	}
 	defer st.Close()
-	if applied, err := st.Migrate(context.Background()); err != nil {
+	if applied, err := migrate(context.Background(), st); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	} else {
 		for _, a := range applied {
@@ -112,6 +149,9 @@ func serve() error {
 		addr = ":8080"
 	}
 	gw := server.New(st, log.Default())
+	if os.Getenv("OPENETL_ACCESS_LOG") != "off" {
+		gw.AccessLog = os.Stderr // one JSON line per request: request id, route, status, duration, account
+	}
 	stopClean := make(chan struct{})
 	defer close(stopClean)
 	go func() { // drop unregistered uploads older than an hour: at startup and hourly
@@ -186,7 +226,7 @@ func createToken(args []string) error {
 		return err
 	}
 	defer st.Close()
-	if _, err := st.Migrate(context.Background()); err != nil {
+	if _, err := migrate(context.Background(), st); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	secret, err := st.CreateToken(context.Background(), *project, *account, *side, *role, *kind, *ttl)
@@ -204,7 +244,7 @@ func rebuildLatest() error {
 		return err
 	}
 	defer st.Close()
-	if _, err := st.Migrate(context.Background()); err != nil {
+	if _, err := migrate(context.Background(), st); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	n, err := st.RebuildLatest(context.Background())

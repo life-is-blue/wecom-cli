@@ -206,6 +206,11 @@ func internalErr(err error) error {
 	return core.NewError(core.StatusInternal, "INTERNAL", "internal error: %v", err)
 }
 
+func isDeadlock(err error) bool {
+	var me *mysql.MySQLError
+	return errors.As(err, &me) && me.Number == 1213
+}
+
 func isDup(err error) bool {
 	var me *mysql.MySQLError
 	return errors.As(err, &me) && me.Number == 1062

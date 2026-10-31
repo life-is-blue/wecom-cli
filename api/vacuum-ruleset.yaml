@@ -1,0 +1,12 @@
+# vacuum ruleset used by scripts/check-contract.sh: the recommended rules minus the ones we ignore on purpose.
+# Every switched-off rule is justified in docs/contract-checklist.md (section "Linter findings").
+extends: [[vacuum:oas, recommended]]
+rules:
+  oas3-missing-example: false      # schemas carry descriptions; examples only where they teach something
+  camel-case-properties: false     # snake_case JSON field names are a recorded M0 decision (docs/m0-naming-spec.md)
+  paths-kebab-case: false          # AIP-122 collection ids and AIP-136 custom verbs are camelCase (importJobs, :advanceStage)
+  operation-description: false     # summary + schema descriptions carry the meaning; requestBody descriptions would only repeat them
+  description-duplication: false   # shared "OK" response descriptions
+  oas-missing-type: false          # AnyValue is deliberately "any JSON value"
+  nullable-enum-contains-null: false # adding null to the enum makes oapi-codegen emit a bogus "<nil>" constant
+  component-description: false     # wrapper and enum schemas are self-describing; entity, error and derived-state schemas are described

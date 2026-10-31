@@ -1,0 +1,14 @@
+# Backlog B (operations gaps noticed, not built)
+
+| ID | Title | Evidence | Fix | Effort |
+| --- | --- | --- | --- | --- |
+| B-1 | Migration runner is not crash-safe | MySQL DDL is not transactional; `Migrate` records a file only after all its statements. Re-running `0003` on a migrated schema fails with error 1060 (found by `check-migrations.sh --apply`). A crash mid-file leaves a half-applied migration that blocks every later start. | Record progress per statement, or write migrations idempotently (information_schema guards via a helper), and test "kill between statements". | M |
+| B-2 | `serve` needs DDL rights | `serve` runs `CREATE TABLE IF NOT EXISTS schema_migrations` and applies migrations; MySQL requires CREATE even when the table exists (found by `app-user-drill.sh`). Forces CREATE on the app user. | `serve --no-migrate` / `OPENETL_MIGRATE=off` that only checks versions (SELECT), migrations run as the owner. | S |
+| B-3 | Per-entity lock needs UPDATE privilege | `SELECT .. FOR UPDATE` on `entity` requires UPDATE/DELETE/LOCK TABLES; we grant `UPDATE (create_time)`, so a stolen app credential can rewrite the as-of cut-off. | Lock with `GET_LOCK` per entity or a dedicated lock table that is not part of the history. | M |
+| B-4 | Binlog tooling is not shipped | `mysql:8.0` has no `mysqlbinlog`; no automation for dumps, binlog shipping, retention or scheduled restore tests exists. | Backup sidecar/cron example in the compose file, nightly CI job running `backup-drill.sh`. | M |
+| B-5 | No blob/metadata consistency check | A dump and the blob directory are separate copies; nothing lists metadata without a blob or orphan blobs (the drill checks it only for its own data). | `admin verify-blobs` (and `--gc` for orphans older than a day). | M |
+| B-6 | Dockerfile never built in CI | Sandbox could not download modules; HEALTHCHECK and non-root behaviour untested. | CI job: `docker build`, run, wait for healthy, `govulncheck ./...`, `check-migrations.sh --apply`. | S |
+| B-7 | `/metrics` guard relies on headers | Loopback + "no proxy headers" heuristic can misclassify exotic proxies. | Serve metrics on a separate listener (`OPENETL_METRICS_ADDR`). | S |
+| B-8 | Metrics are per process | Counters reset on restart and are not aggregated across replicas; DB-side query-limiter rejections are inferred from 429 reasons in the HTTP layer. | Expose a counter from `store`'s limiter; rely on Prometheus `rate()` for resets. | S |
+| B-9 | Manifest freezing is manual | `0005_idem_fingerprint.sql` is linted but unfrozen until someone runs `check-migrations.sh --freeze` at release. | Run `--freeze` in the release script and fail CI when a tagged build has unfrozen migrations. | S |
+| B-10 | Graceful shutdown shorter than writes | Shutdown waits 10 s while `WriteTimeout` is 60 s; a long import apply is cut (transactional, so safe, but the client sees a reset). | Drain timeout >= WriteTimeout, or make large applies resumable. | S |

@@ -1,6 +1,6 @@
 ---
 name: openetl-workflow
-description: openetl 工作流进度操作：查看我负责的未完成工作流、开始工作、推进阶段、记录问题或风险评论（可带附件）、回退阶段、调整范围，以及生成日报。当用户要查询或更新迁移工作流进度、写日报、汇报阻塞时使用。执行前必须先读取 openetl-shared 完成前置检查。
+description: openetl 工作流进度操作：查看我负责的未完成工作流、开始工作、推进阶段、记录问题或风险评论（可带附件）、回退阶段、调整范围、创建或修改工作流与任务，以及生成日报。当用户要查询或更新迁移工作流进度、写日报、汇报阻塞时使用。执行前必须先读取 openetl-shared 完成前置检查。
 ---
 
 # openetl 工作流进度
@@ -64,7 +64,7 @@ openetl comment resolve WF-000123 <评论编号> --note "权限已开通"   # <�
 openetl comment reopen WF-000123 <评论编号>
 ```
 
-`--attach` 会先上传文件再登记附件，单文件不超过 100 MiB；`--dry-run` 不会上传附件。服务端若返回 `UNIMPLEMENTED`（501），说明当前部署尚未开放附件，去掉 `--attach`，把证据写进评论正文，并告知用户。
+`--attach` 会先上传文件再登记附件，单文件不超过 100 MiB；`--dry-run` 不会上传附件。附件上传失败（例如 `PROJECT_STORAGE_QUOTA_EXCEEDED`、`SIZE_MISMATCH`、`SHA256_MISMATCH`）时不要重试同一文件，把错误告知用户；确需继续时去掉 `--attach`，把证据写进评论正文并说明。
 
 ## 流程 4：回退阶段
 
@@ -102,3 +102,23 @@ openetl query "SELECT code, name, current_stage, open_issues, open_risks FROM wo
 ```
 
 4. 把 `entity_id` 对应成工作流编号和名称后再汇报（查询时直接选 `code`、`name`，或用 `openetl workflow get`）。日报结构：今日完成、进行中、阻塞与风险（含负责方）、明日计划。**日报中只出现编号、名称、阶段、时间和人名，不出现内部标识。**
+
+## 流程 7：创建、修改、删除工作流与任务
+
+单个工作流或任务的增删改用下面的命令（批量请用 `openetl-import`）。`--label`、`--annotation`、`--assignee` 每次给出的字段**整体替换**原值：要保留旧标签就把它们一起写上。所有写命令先 `--dry-run`，修改和删除带 `--etag`（先 `get`）：
+
+```bash
+openetl workflow create --name daily_loader --label domain=dwh --assignee dev_owner=alice --dry-run
+openetl workflow update WF-000123 --name daily_loader_v2 --label domain=dwh --label area=ods --etag <etag> --dry-run
+openetl workflow delete WF-000123 --note "重复登记" --etag <etag>
+openetl workflow restore WF-000123 --etag <etag>
+openetl task create --name extract_orders --workflow WF-000123 --label kind=sql --dry-run
+openetl task list --workflow WF-000123 --page-size 100
+openetl task assign TK-000456 --workflow WF-000124 --membership shared
+openetl task assign TK-000456 --workflow WF-000124 --membership primary
+openetl task assign TK-000456 --workflow WF-000124 --membership none
+openetl task delete TK-000456 --etag <etag>
+openetl task restore TK-000456 --etag <etag>
+```
+
+任务可以同时属于多个工作流，其中至多一个是主工作流（`primary`，创建时第一个 `--workflow`）；`--membership none` 表示脱离该工作流。删除是软删除，可 `restore` 恢复；已删除的工作流不会出现在 `workflows` 视图里，但它的任务和评论仍在各自视图中。

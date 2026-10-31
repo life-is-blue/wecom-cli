@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -194,12 +193,11 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 	}
 	offset := 0
 	if pageToken != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(pageToken)
-		n, err2 := strconv.Atoi(strings.TrimPrefix(string(raw), "o:"))
-		if err != nil || err2 != nil || n < 0 || !strings.HasPrefix(string(raw), "o:") {
-			return nil, core.NewError(core.StatusInvalidArgument, "INVALID_PAGE_TOKEN", "invalid page_token")
+		kind, n, err := openPageToken(pageToken, queryBinding(p, sqlText))
+		if err != nil || kind != "o" {
+			return nil, badPageToken("invalid page_token")
 		}
-		offset = n
+		offset = int(n)
 	}
 
 	account, _ := ctx.Value(queryAcctKey{}).(string)
@@ -286,7 +284,7 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 	}
 	resp.Rows = &out
 	if more {
-		resp.NextPageToken = ptr(base64.RawURLEncoding.EncodeToString([]byte("o:" + strconv.Itoa(offset+pageSize))))
+		resp.NextPageToken = ptr(sealPageToken("o", int64(offset+pageSize), queryBinding(p, sqlText)))
 	}
 	return resp, nil
 }

@@ -1,7 +1,8 @@
 # openetl M0 shared spec (decisions already made; do not re-open)
 
-Source of truth for the *current* schema/views/rules/CLI: ./contract.txt (extracted from the design doc's
-"M0 契约草案" tab). This file lists ONLY what changes versus contract.txt, plus constraints.
+Source of truth for the *current* schema/views/rules/CLI: `db/migrations/`, `api/openapi.yaml`, `internal/cli/views.json` and
+`scripts/audit/vocab.md` (the original contract text lives in the "M0 契约草案" tab of the design document, see `docs/design.md`).
+This file lists ONLY what changed versus that draft, plus constraints.
 
 ## Product
 Migration progress management platform. Records progress of migrating workflows/tasks (stages, scope, owners,
@@ -49,7 +50,7 @@ development, deployment, verify, accept, dual_run, cutover (NOT developer_valida
           POST /v1/{name}:resolve   (comments)   POST /v1/{name}:reopen
 - Same pattern for tasks (create/update/delete/undelete/list/get, :assign to workflow).
 - Comments: create/list/get under workflow; attachments: POST /v1/{parent}/attachments:initUpload -> presigned URL,
-  then POST /v1/{parent}/attachments (metadata: filename,size,sha256,storage_key); GET /v1/{name}:download -> URL. Cap 100MB.
+  then POST /v1/{parent}/attachments (metadata: filename,size,sha256,storage_key); GET /v1/{name}:download -> URL. Cap 100 MiB (104857600 bytes).
 - Events: list/get only (GET /v1/{parent}/events?filter=&as_of=)
 - Query: POST /v1/projects/{project}:query {sql, page_size, page_token, as_of} -> {columns, rows, next_page_token}
   read-only SELECT over documented views only.

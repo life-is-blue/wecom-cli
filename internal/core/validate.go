@@ -113,6 +113,9 @@ func builtin(in Input, c Change, after map[string]json.RawMessage, reason *Reaso
 				return NewError(StatusFailedPrecondition, "REASON_REQUIRED", "reopening passed stage %q requires a reject reason", key).With("required_kind", KindReject)
 			}
 		case StateNA:
+			if ov == StatePass { // leaving PASSED takes a reject reason, N/A takes another kind: regress first
+				return NewError(StatusFailedPrecondition, "REASON_REQUIRED", "passed stage %q must be regressed with a reject reason before it can be marked not applicable", key).With("required_kind", KindReject)
+			}
 			if reason == nil || reason.Kind != KindNotApplicable {
 				return NewError(StatusFailedPrecondition, "REASON_REQUIRED", "marking stage %q not applicable requires a not_applicable reason", key).With("required_kind", KindNotApplicable)
 			}

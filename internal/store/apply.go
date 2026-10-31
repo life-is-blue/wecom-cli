@@ -31,6 +31,9 @@ type ChangeRequest struct {
 	ValidateOnly  bool
 	EventTime     time.Time // zero = now
 	CorrectsEvent int64
+	// Fingerprint identifies the request payload (hash, caller-computed). With RequestID it makes a
+	// reused request_id with a different payload fail instead of silently replaying the first result.
+	Fingerprint string
 	// Plan turns the current state into the key changes. It runs inside the transaction after the
 	// entity row is locked, so it sees the latest committed values.
 	Plan func(cur *Entity, env core.Env) ([]PlannedChange, error)
@@ -50,10 +53,13 @@ var errRetryReplay = errors.New("retry as replay")
 
 // Apply runs one write in one transaction.
 func (s *Store) Apply(ctx context.Context, req ChangeRequest) (*Result, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		res, err := s.apply(ctx, req)
-		if errors.Is(err, errRetryReplay) {
-			continue // concurrent identical request_id won the race: second pass takes the replay path
+		if errors.Is(err, errRetryReplay) || isDeadlock(err) {
+			// a concurrent identical request_id won the race (second pass takes the replay path), or this
+			// transaction was the deadlock victim of two merges locking each other's chains (second pass
+			// sees the other merge and answers MERGE_CYCLE)
+			continue
 		}
 		return res, internalErr(err)
 	}
@@ -98,19 +104,27 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 	// 2. idempotency
 	if req.RequestID != "" {
 		var evID, entID int64
-		err := tx.QueryRowContext(ctx, `SELECT id, entity_id FROM event WHERE project_id=? AND idempotency_key=?`,
-			req.ProjectID, req.RequestID).Scan(&evID, &entID)
+		var storedFP sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT id, entity_id, idem_fp FROM event WHERE project_id=? AND idempotency_key=?`,
+			req.ProjectID, req.RequestID).Scan(&evID, &entID, &storedFP)
 		if err == nil {
 			if req.EntityID != 0 && entID != req.EntityID {
 				return nil, core.NewError(core.StatusAlreadyExists, "REQUEST_ID_REUSED", "request_id was already used for a different request")
+			}
+			if req.Fingerprint != "" && storedFP.Valid && storedFP.String != req.Fingerprint {
+				return nil, core.NewError(core.StatusAlreadyExists, "IDEMPOTENCY_KEY_REUSED", "request_id was already used with a different payload")
 			}
 			changes, err := loadEventChanges(ctx, tx, evID)
 			if err != nil {
 				return nil, err
 			}
 			ent, err := loadEntity(ctx, tx, req.ProjectID, req.EntityType, entID)
-			if err != nil {
+			if isNoRows(err) {
+				// the key belongs to an entity of another type/project: a different request
 				return nil, core.NewError(core.StatusAlreadyExists, "REQUEST_ID_REUSED", "request_id was already used for a different request")
+			}
+			if err != nil {
+				return nil, err // a real failure must not be reported as the client's mistake
 			}
 			return &Result{EntityID: entID, EventID: evID, Changes: changes, Replayed: true, After: ent}, nil
 		}
@@ -201,13 +215,17 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 	if req.RequestID != "" {
 		idem = sql.NullString{String: req.RequestID, Valid: true}
 	}
+	var fp sql.NullString
+	if req.RequestID != "" && req.Fingerprint != "" {
+		fp = sql.NullString{String: req.Fingerprint, Valid: true}
+	}
 	var corrects sql.NullInt64
 	if req.CorrectsEvent != 0 {
 		corrects = sql.NullInt64{Int64: req.CorrectsEvent, Valid: true}
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO event(project_id, entity_id, actor, side, channel, reason_key, note, idempotency_key,
-		corrects_event_id, event_time, create_time) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		req.ProjectID, entityID, req.Actor.Account, req.Actor.Side, req.Actor.Channel, reasonKey, note, idem, corrects, eventTime, now)
+		corrects_event_id, event_time, create_time, idem_fp) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		req.ProjectID, entityID, req.Actor.Account, req.Actor.Side, req.Actor.Channel, reasonKey, note, idem, corrects, eventTime, now, fp)
 	if err != nil {
 		if isDup(err) && req.RequestID != "" {
 			return nil, errRetryReplay
@@ -330,7 +348,24 @@ func (e *txEnv) latest(id int64, key string) (json.RawMessage, error) {
 	return json.RawMessage(nv.String), nil
 }
 
+// lock takes the row lock of a workflow whose merge state is about to be read. Merge validation
+// reads other workflows, so without it two concurrent merges (A into B, B into A) both pass the
+// cycle check and both commit. Writers always lock their own entity row first, so a locked chain
+// cannot change under the check; two merges that lock each other end in a deadlock and one retries.
+func (e *txEnv) lock(id int64) error {
+	var x int64
+	err := e.q.QueryRowContext(e.ctx, `SELECT id FROM entity WHERE id=? AND project_id=? FOR UPDATE`, id, e.project).Scan(&x)
+	if isNoRows(err) {
+		return nil
+	}
+	return err
+}
+
 func (e *txEnv) WorkflowExists(id int64) (bool, error) {
+	if err := e.lock(id); err != nil {
+		e.err = err
+		return false, err
+	}
 	var n int
 	if err := e.q.QueryRowContext(e.ctx, `SELECT COUNT(*) FROM entity WHERE id=? AND project_id=? AND type='workflow'`, id, e.project).Scan(&n); err != nil {
 		e.err = err
@@ -348,6 +383,10 @@ func (e *txEnv) WorkflowExists(id int64) (bool, error) {
 }
 
 func (e *txEnv) MergedInto(id int64) (int64, bool, error) {
+	if err := e.lock(id); err != nil {
+		e.err = err
+		return 0, false, err
+	}
 	sc, err := e.latest(id, "scope")
 	if err != nil {
 		e.err = err

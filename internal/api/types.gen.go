@@ -183,6 +183,27 @@ func (e ConfigRulesSide) Valid() bool {
 	}
 }
 
+// Defines values for DiffImportJobResponseRowsChangesKind.
+const (
+	DiffImportJobResponseRowsChangesKindConflict DiffImportJobResponseRowsChangesKind = "conflict"
+	DiffImportJobResponseRowsChangesKindFill     DiffImportJobResponseRowsChangesKind = "fill"
+	DiffImportJobResponseRowsChangesKindSource   DiffImportJobResponseRowsChangesKind = "source"
+)
+
+// Valid indicates whether the value is a known member of the DiffImportJobResponseRowsChangesKind enum.
+func (e DiffImportJobResponseRowsChangesKind) Valid() bool {
+	switch e {
+	case DiffImportJobResponseRowsChangesKindConflict:
+		return true
+	case DiffImportJobResponseRowsChangesKindFill:
+		return true
+	case DiffImportJobResponseRowsChangesKindSource:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorErrorStatus.
 const (
 	ABORTED            ErrorErrorStatus = "ABORTED"
@@ -299,6 +320,11 @@ const (
 	MISSING           ImportAction = "MISSING"
 	NEW               ImportAction = "NEW"
 	SUSPECT           ImportAction = "SUSPECT"
+	TASKCHANGED       ImportAction = "TASK_CHANGED"
+	TASKCONFLICT      ImportAction = "TASK_CONFLICT"
+	TASKMISSING       ImportAction = "TASK_MISSING"
+	TASKNEW           ImportAction = "TASK_NEW"
+	TASKUNCHANGED     ImportAction = "TASK_UNCHANGED"
 	UNCHANGED         ImportAction = "UNCHANGED"
 )
 
@@ -316,6 +342,16 @@ func (e ImportAction) Valid() bool {
 	case NEW:
 		return true
 	case SUSPECT:
+		return true
+	case TASKCHANGED:
+		return true
+	case TASKCONFLICT:
+		return true
+	case TASKMISSING:
+		return true
+	case TASKNEW:
+		return true
+	case TASKUNCHANGED:
 		return true
 	case UNCHANGED:
 		return true
@@ -596,7 +632,7 @@ type Config struct {
 		ToValue *string `json:"to_value,omitempty"`
 	} `json:"rules,omitempty"`
 
-	// Settings Key/value settings; secrets are stored as references only.
+	// Settings Key/value settings; secrets are stored as references only. null (omitted by non-admin readers).
 	Settings *map[string]string `json:"settings,omitempty"`
 
 	// Stages Stage order and names.
@@ -632,6 +668,9 @@ type DiffImportJobResponse struct {
 		Changes *[]struct {
 			Key *string `json:"key,omitempty"`
 
+			// Kind Extension.
+			Kind *DiffImportJobResponseRowsChangesKind `json:"kind,omitempty"`
+
 			// NewValue Any JSON value.
 			NewValue *AnyValue `json:"new_value,omitempty"`
 
@@ -648,13 +687,16 @@ type DiffImportJobResponse struct {
 	} `json:"rows,omitempty"`
 }
 
+// DiffImportJobResponseRowsChangesKind Extension.
+type DiffImportJobResponseRowsChangesKind string
+
 // DownloadAttachmentResponse defines model for DownloadAttachmentResponse.
 type DownloadAttachmentResponse struct {
 	DownloadUrl *string    `json:"download_url,omitempty"`
 	ExpireTime  *time.Time `json:"expire_time,omitempty"`
 }
 
-// Error defines model for Error.
+// Error AIP-193 error envelope (google.rpc.Status as JSON): code is the HTTP status, status the canonical code name, details[0] the ErrorInfo.
 type Error struct {
 	Error struct {
 		// Code HTTP status code.
@@ -670,7 +712,7 @@ type Error struct {
 // ErrorErrorStatus defines model for Error.Error.Status.
 type ErrorErrorStatus string
 
-// ErrorInfo defines model for ErrorInfo.
+// ErrorInfo Machine-readable error identity; (reason, domain) is stable per kind of error, metadata keys only grow.
 type ErrorInfo struct {
 	Type ErrorInfoType `json:"@type"`
 
@@ -727,7 +769,7 @@ type Event struct {
 // EventChannel defines model for Event.Channel.
 type EventChannel string
 
-// Health defines model for Health.
+// Health Derived from unresolved comments: BLOCKED by an open ISSUE, AT_RISK by an open RISK.
 type Health string
 
 // ImportAction defines model for ImportAction.
@@ -740,14 +782,23 @@ type ImportJob struct {
 	Creator    *string    `json:"creator,omitempty"`
 
 	// Name Example: projects/acme-dw/importJobs/17
-	Name *string      `json:"name,omitempty"`
+	Name *string `json:"name,omitempty"`
+
+	// RowErrors Staged rows that failed validation (left out of the diff). Only returned by createImportJob.
+	RowErrors *[]struct {
+		Message *string `json:"message,omitempty"`
+		Reason  *string `json:"reason,omitempty"`
+
+		// RowNo 1-based.
+		RowNo *int `json:"row_no,omitempty"`
+	} `json:"row_errors,omitempty"`
 	Rows *[]ImportRow `json:"rows,omitempty"`
 
 	// Source Source system label.
 	Source *string         `json:"source,omitempty"`
 	State  *ImportJobState `json:"state,omitempty"`
 
-	// Summary Row counts keyed by ImportAction.
+	// Summary Row counts keyed by ImportAction, plus INVALID, and after apply CREATED, UPDATED, SKIPPED and TASK_CREATED, TASK_UPDATED, TASK_SKIPPED.
 	Summary *map[string]int `json:"summary,omitempty"`
 	Uid     *string         `json:"uid,omitempty"`
 }
@@ -869,7 +920,7 @@ type MutationOptions struct {
 	ValidateOnly *bool               `json:"validate_only,omitempty"`
 }
 
-// Operation defines model for Operation.
+// Operation Shaped like google.longrunning.Operation but synchronous: `done` is always true and `name` is the import job name. There is no Operations service and no metadata.
 type Operation struct {
 	Done bool `json:"done"`
 
@@ -883,9 +934,13 @@ type Operation struct {
 
 // QueryRequest defines model for QueryRequest.
 type QueryRequest struct {
-	AsOf      *time.Time `json:"as_of,omitempty"`
-	PageSize  *int       `json:"page_size,omitempty"`
-	PageToken *string    `json:"page_token,omitempty"`
+	// AsOf Not supported: any value is rejected with AS_OF_UNSUPPORTED.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	AsOf *time.Time `json:"as_of,omitempty"`
+
+	// PageSize Default 1000; values above 1000 are coerced to 1000.
+	PageSize  *int    `json:"page_size,omitempty"`
+	PageToken *string `json:"page_token,omitempty"`
 
 	// Sql Example: SELECT stage, health, workflows FROM stage_distribution
 	Sql string `json:"sql"`
@@ -917,7 +972,7 @@ type RegressStageRequest struct {
 // Role defines model for Role.
 type Role string
 
-// Scope defines model for Scope.
+// Scope Whether the workflow is part of the migration.
 type Scope string
 
 // SetScopeRequest defines model for SetScopeRequest.
@@ -930,13 +985,15 @@ type SetScopeRequest struct {
 	Note       *string `json:"note,omitempty"`
 
 	// Reason reason_key from the project config, e.g. rej_row_count.
-	Reason       *string             `json:"reason,omitempty"`
-	RequestId    *openapi_types.UUID `json:"request_id,omitempty"`
-	Scope        Scope               `json:"scope"`
-	ValidateOnly *bool               `json:"validate_only,omitempty"`
+	Reason    *string             `json:"reason,omitempty"`
+	RequestId *openapi_types.UUID `json:"request_id,omitempty"`
+
+	// Scope Whether the workflow is part of the migration.
+	Scope        Scope `json:"scope"`
+	ValidateOnly *bool `json:"validate_only,omitempty"`
 }
 
-// Side defines model for Side.
+// Side Which party acted; SYSTEM for imports and automation.
 type Side string
 
 // Source Where the record was imported from.
@@ -953,7 +1010,7 @@ type Source struct {
 // Example: development
 type StageKey = string
 
-// StageState defines model for StageState.
+// StageState State of one stage of one workflow.
 type StageState string
 
 // StageStatus defines model for StageStatus.
@@ -961,7 +1018,9 @@ type StageStatus struct {
 	// Stage Stage key from config; defaults: development, deployment, verify, accept, dual_run, cutover.
 	//
 	// Example: development
-	Stage StageKey   `json:"stage"`
+	Stage StageKey `json:"stage"`
+
+	// State State of one stage of one workflow.
 	State StageState `json:"state"`
 }
 
@@ -1122,7 +1181,7 @@ type PageToken = string
 type ProjectP = string
 
 // RequestId defines model for RequestId.
-type RequestId = openapi_types.UUID
+type RequestId = string
 
 // ShowDeleted defines model for ShowDeleted.
 type ShowDeleted = bool
@@ -1144,7 +1203,7 @@ type Mutation = MutationOptions
 
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1159,13 +1218,13 @@ type UpdateConfigParams struct {
 
 // CreateImportJobParams defines parameters for CreateImportJob.
 type CreateImportJobParams struct {
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 }
 
 // DiffImportJobParams defines parameters for DiffImportJob.
 type DiffImportJobParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1177,7 +1236,7 @@ type DiffImportJobParams struct {
 
 // ListMembersParams defines parameters for ListMembers.
 type ListMembersParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1186,7 +1245,7 @@ type ListMembersParams struct {
 
 // ListTasksParams defines parameters for ListTasks.
 type ListTasksParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1204,10 +1263,11 @@ type ListTasksParams struct {
 
 // CreateTaskParams defines parameters for CreateTask.
 type CreateTaskParams struct {
-	// TaskId Optional id, lowercase slug. Server-assigned (`tk-NNNNNN`) when omitted.
+	// TaskId Reserved (AIP-133 `{resource}_id`). Client-assigned ids are not supported yet: any value is rejected with INVALID_ARGUMENT / CLIENT_ID_UNSUPPORTED. Ids are server-assigned (`tk-NNNNNN`).
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	TaskId *string `form:"task_id,omitempty" json:"task_id,omitempty"`
 
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1219,7 +1279,7 @@ type DeleteTaskParams struct {
 	// Etag Expected etag; mismatch is ABORTED/ETAG_MISMATCH.
 	Etag *EtagQuery `form:"etag,omitempty" json:"etag,omitempty"`
 
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1234,7 +1294,7 @@ type UpdateTaskParams struct {
 
 // ListWorkflowsParams defines parameters for ListWorkflows.
 type ListWorkflowsParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1252,10 +1312,11 @@ type ListWorkflowsParams struct {
 
 // CreateWorkflowParams defines parameters for CreateWorkflow.
 type CreateWorkflowParams struct {
-	// WorkflowId Optional id, lowercase slug. Server-assigned (`wf-NNNNNN`) when omitted.
+	// WorkflowId Reserved (AIP-133 `{resource}_id`). Client-assigned ids are not supported yet: any value is rejected with INVALID_ARGUMENT / CLIENT_ID_UNSUPPORTED. Ids are server-assigned (`wf-NNNNNN`).
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	WorkflowId *string `form:"workflow_id,omitempty" json:"workflow_id,omitempty"`
 
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1267,7 +1328,7 @@ type DeleteWorkflowParams struct {
 	// Etag Expected etag; mismatch is ABORTED/ETAG_MISMATCH.
 	Etag *EtagQuery `form:"etag,omitempty" json:"etag,omitempty"`
 
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1282,7 +1343,7 @@ type UpdateWorkflowParams struct {
 
 // CreateAttachmentParams defines parameters for CreateAttachment.
 type CreateAttachmentParams struct {
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1291,7 +1352,7 @@ type CreateAttachmentParams struct {
 
 // ListCommentsParams defines parameters for ListComments.
 type ListCommentsParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.
@@ -1306,7 +1367,7 @@ type ListCommentsParams struct {
 
 // CreateCommentParams defines parameters for CreateComment.
 type CreateCommentParams struct {
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1315,7 +1376,7 @@ type CreateCommentParams struct {
 
 // DeleteCommentParams defines parameters for DeleteComment.
 type DeleteCommentParams struct {
-	// RequestId UUID idempotency key.
+	// RequestId Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.
 	RequestId *RequestId `form:"request_id,omitempty" json:"request_id,omitempty"`
 
 	// ValidateOnly Validate and apply rules, write nothing.
@@ -1324,7 +1385,7 @@ type DeleteCommentParams struct {
 
 // ListEventsParams defines parameters for ListEvents.
 type ListEventsParams struct {
-	// PageSize Max items; server default 50, max 1000.
+	// PageSize Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).
 	PageSize *PageSize `form:"page_size,omitempty" json:"page_size,omitempty"`
 
 	// PageToken Opaque, from next_page_token.

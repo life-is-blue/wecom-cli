@@ -2,10 +2,8 @@ package store
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -95,11 +93,9 @@ func (lq *listQuery) run(ctx context.Context, q execer, o ListOpts) ([]int64, st
 	args := append([]any{}, lq.args...)
 	offset := 0
 	if o.PageToken != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(o.PageToken)
-		kind, val, ok := strings.Cut(string(raw), ":")
-		n, err2 := strconv.ParseInt(val, 10, 64)
-		if err != nil || !ok || err2 != nil || n < 0 {
-			return nil, "", core.NewError(core.StatusInvalidArgument, "INVALID_PAGE_TOKEN", "invalid page_token")
+		kind, n, err := openPageToken(o.PageToken, listBinding(o, lq.where, lq.args))
+		if err != nil {
+			return nil, "", err
 		}
 		switch {
 		case kind == "k" && keyset:
@@ -153,11 +149,10 @@ func (lq *listQuery) run(ctx context.Context, q execer, o ListOpts) ([]int64, st
 	if len(ids) > size {
 		ids = ids[:size]
 		if keyset {
-			next = "k:" + strconv.FormatInt(ids[len(ids)-1], 10)
+			next = sealPageToken("k", ids[len(ids)-1], listBinding(o, lq.where, lq.args))
 		} else {
-			next = "o:" + strconv.Itoa(offset+size)
+			next = sealPageToken("o", int64(offset+size), listBinding(o, lq.where, lq.args))
 		}
-		next = base64.RawURLEncoding.EncodeToString([]byte(next))
 	}
 	return ids, next, nil
 }

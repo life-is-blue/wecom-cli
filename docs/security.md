@@ -88,3 +88,28 @@ by older versions have no saved base URL: they stay usable (unbound) and print a
   revoke its tokens when removing the last membership.
 * Unregistered staging blobs live up to one hour; a client that fails after commit but before the event is written triggers a
   best-effort delete of the committed blob.
+
+## Threat model and contract checks
+
+`docs/threat-model.md` (STRIDE, with the live attack record) and `docs/contract-checklist.md` (API contract vs AIP).
+`scripts/check-contract.sh` re-runs the contract gate and the attack drill against a throwaway server.
+
+## Scans
+
+Run 2026-10-31 on the tree after the contract work. Tools were installed with `go install` (govulncheck, gosec,
+staticcheck) and `pip install semgrep`; none is vendored into `go.mod`.
+
+```bash
+govulncheck ./...                                   # call-graph aware, uses the Go vulnerability database
+gosec -quiet -fmt text ./...
+staticcheck ./...
+semgrep scan --config p/golang --config p/security-audit --metrics=off --exclude '*_test.go' .
+GOTOOLCHAIN=go1.26.10 govulncheck ./...             # the same scan with a patched toolchain
+```
+
+| Tool | Result | Triage |
+| --- | --- | --- |
+| govulncheck, toolchain Go 1.24.7 | 39 vulnerabilities, **all in the Go standard library** (`net/http`, `crypto/tls`, `crypto/x509`, `net/url`, `net/textproto`, `encoding/asn1|pem|xml`, `net`, `os`); 0 in third-party modules. Fixed in 1.24.8 to 1.24.13, 1.25.8 to 1.25.13 and 1.26.9/1.26.10 (11 of them only in 1.26.x) | **Real, fixable by the build toolchain only.** `GOTOOLCHAIN=go1.26.10 govulncheck ./...` reports "No vulnerabilities found". Action: build releases with Go >= 1.26.10 (the `Dockerfile` pins `golang:1.24-alpine`, so the released image is affected; not changed here, owner of the Dockerfile, backlog C-13). `go.mod` (`go 1.24.7`) needs no change for language level |
+| gosec | 76 issues: 49 G104 (unhandled errors, mostly `Rollback`/`Close` in deferred cleanup), 10 G202 (SQL string concatenation), 7 G304 (file inclusion), 4 G101 (hardcoded credentials), 3 G703 (path traversal), G302, G306, G706 (1 each) | **0 real vulnerabilities, 2 hardening items.** G202: every hit builds `IN (?,?,...)` with `placeholders(n)`, values stay bound (`store/import.go`, `event.go`, `admin.go`). G101: constant names such as `EnvPageTokenKey`/`EnvMetricsToken`, no secrets. G703/G304 in `storage/fs.go`: paths come from `ValidKey`-checked keys under the storage root; G304 in the CLI and importer: user-chosen local paths by design. G104: cleanup paths. G706: `log.Println` of the listen address from the environment. **Hardening:** G302/G306, the CLI writes downloaded evidence (`cmd_events.go:168`) and `-o` output (`app.go:190`) with mode 0644; consider 0600 (backlog C-14, `internal/cli` is not in this review's files) |
+| staticcheck | 10 findings (U1000 unused code x8, SA4000 identical expressions in a test x1) | `ctxKey` and `unimplemented` in `internal/server/server.go`: removed. Others are in `internal/cli`, `internal/store`, `internal/store/refmodel` (reported, not touched): `optStr`, `defDesc`, `nonEmptyMap`, `refmodel` fields `wf/cm/ver/logf`, SA4000 in `query_limit_test.go:23` |
+| semgrep 1.183.0 (`p/golang`, `p/security-audit`) | 0 findings in Go code; 2 `dynamic-urllib-use-detected` in `scripts/audit/audit.py:739` and `scripts/reconcile.py:95` | ignored: both fetch from the operator-configured server URL; files belong to other workers |

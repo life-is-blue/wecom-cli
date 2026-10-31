@@ -58,9 +58,9 @@ ET=$(as_dev workflow get "$WF" | jget "d['etag']")
 as_dev workflow update "$WF" --name daily_loader_v2 --etag "$ET" >/dev/null && echo "  update with fresh etag ok"
 expect_fail ETAG_MISMATCH as_dev workflow update "$WF" --name stale --etag "$ET"
 RID=$(python3 -c 'import uuid;print(uuid.uuid4())')
-A=$(as_dev scope set "$WF" --to out --reason not_needed --request-id "$RID" 2>&1 | jget "d.get('etag')")
-B=$(as_dev scope set "$WF" --to out --reason not_needed --request-id "$RID" 2>&1 | jget "d.get('etag')")
-[ "$A" = "$B" ] && echo "  same request-id returned the same result" || { echo "  FAIL idempotency $A vs $B"; fail=1; }
+A=$(as_dev scope set "$WF" --to out --reason obsolete --request-id "$RID" 2>&1 | jget "d.get('etag')")
+B=$(as_dev scope set "$WF" --to out --reason obsolete --request-id "$RID" 2>&1 | jget "d.get('etag')")
+[ -n "$A" ] && [ "$A" != "None" ] && [ "$A" = "$B" ] && echo "  same request-id returned the same result" || { echo "  FAIL idempotency $A vs $B"; fail=1; }
 
 say "7. --dry-run writes nothing"
 BEFORE=$(as_dev workflow get "$WF" | jget "d['etag']")

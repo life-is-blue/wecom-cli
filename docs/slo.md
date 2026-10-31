@@ -1,0 +1,11 @@
+# Service level objectives (foundation)
+
+Scope: one openetl-server + one MySQL 8.0 at the documented scale (see `docs/performance.md`: ~3000 workflows, ~10k tasks, tens of thousands of events). Window: rolling 28 days. Metrics come from `GET /metrics` (`docs/operations.md`), drills from `scripts/`.
+
+| # | Objective | Target | Measured from |
+| --- | --- | --- | --- |
+| 1 | **Write success rate**: share of write requests (POST/PATCH/PUT/DELETE) not failing with a server fault | >= 99.5% | `1 - sum(rate(openetl_http_requests_total{method=~"POST\|PATCH\|PUT\|DELETE",class="5xx"}[28d])) / sum(rate(openetl_http_requests_total{method=~"POST\|PATCH\|PUT\|DELETE"}[28d]))`. 4xx (validation, conflicts, 429 limiter) are the caller's and do not count; `openetl_query_limiter_rejections_total` is watched separately as a capacity signal. |
+| 2 | **Read/query latency**: p95 of successful GETs and `:query` calls | < 500 ms at the documented scale (the e2e flow already fails any single CLI call over 5 s) | `histogram_quantile(0.95, sum by (le) (rate(openetl_http_request_duration_seconds_bucket{class="2xx",method="GET"}[5m])))`, same for the `/v1/projects/{p}:query` route; bucket bounds are 0.25 / 0.5 s so the target is resolvable. Confirm after changes with `scripts/perf-measure.sh`. Import stage/apply are batch jobs outside this SLO and tracked by `openetl_import_duration_seconds`. |
+| 3 | **No acknowledged write lost**: a write that returned 2xx survives crash and restore | 0 lost, always (not budgeted) | `scripts/backup-drill.sh` (full binlog replay: every table's row count and checksum equal the pre-disaster state; PITR: state equals the chosen point), with `sync_binlog=1` and `innodb_flush_log_at_trx_commit=1`; run monthly and before upgrades. Between restore tests, `admin verify-latest` must stay clean. Loss is bounded by archived-binlog freshness, so alert if the newest archived binlog is older than the RPO you promise (the drill observed RPO 0 s with a complete archive, RTO ~9 s at drill scale). |
+
+Error budget: SLO 1 allows 0.5% failed writes, about 3.4 hours of total write outage per 28 days; when the budget is spent, stop feature releases and fix reliability until it recovers. SLO 3 has no budget: any lost acknowledged write is an incident with a postmortem.

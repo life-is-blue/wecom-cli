@@ -1,0 +1,6 @@
+[
+  {"match": "header comment number matches filename: db/migrations/0003_import_job.sql",
+   "why": "0003's header comment says 'openetl 0004'. Migration files are frozen by docs/migrations.sha256 (ADR 0008); reported to the lead, no edit possible."},
+  {"match": "db/migrations/0004_entity_latest.sql:4 binary name openetl-gateway",
+   "why": "0004's comment names the former binary 'openetl-gateway' (now openetl-server). Frozen file (docs/migrations.sha256); comment-only."}
+]

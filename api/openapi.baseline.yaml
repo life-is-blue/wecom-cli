@@ -1,0 +1,1096 @@
+openapi: 3.0.3
+info:
+  title: openetl Server API
+  version: 1.0.0
+  description: |
+    REST+JSON API of the openetl migration progress management platform (AIP style).
+    The platform records progress; it never executes migrations. Times are RFC 3339 UTC.
+    Mutating methods accept `request_id` (UUID idempotency key; a repeat returns the first result),
+    `etag` (optimistic concurrency; mismatch is ABORTED/ETAG_MISMATCH), and `validate_only`
+    (run all validation and rules, write nothing). Fields marked readOnly are OUTPUT_ONLY.
+    Soft delete and undelete are idempotent: deleting a deleted resource (or undeleting a live one) succeeds and
+    returns the resource (AIP-164 would answer NOT_FOUND / ALREADY_EXISTS; see docs/contract-checklist.md).
+    A known route called with an unsupported HTTP method answers 400 INVALID_ARGUMENT / METHOD_NOT_ALLOWED (not 405).
+    Workflow/task ids are case-insensitive on input (`WF-000123` == `wf-000123`) and canonical lowercase on output.
+servers:
+  - url: https://{host}
+    variables:
+      host: {default: openetl.example.com}
+security:
+  - bearerAuth: []
+tags:
+  - {name: Identity, description: The calling account and its memberships.}
+  - {name: Workflows, description: 'Workflows: lifecycle stages, scope, soft delete.'}
+  - {name: Tasks, description: 'Tasks and their membership in workflows.'}
+  - {name: Comments, description: 'Notes, questions, issues and risks on a workflow.'}
+  - {name: Attachments, description: 'Evidence blobs: staged upload, then registration.'}
+  - {name: Events, description: Read-only audit trail.}
+  - {name: Query, description: Read-only SQL over the documented views.}
+  - {name: ImportJobs, description: 'Stage, diff, apply and roll back bulk imports.'}
+  - {name: Admin, description: 'Members, tokens and project configuration (admin).'}
+
+paths:
+  /v1/me:
+    get:
+      tags: [Identity]
+      operationId: getMe
+      summary: Current identity and project memberships
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Me'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  # ---------------------------------------------------------------- workflows
+  /v1/projects/{project}/workflows:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    get:
+      tags: [Workflows]
+      operationId: listWorkflows
+      summary: List workflows
+      description: |
+        `filter` supports `field = value`, `AND`/`OR`/`NOT`, `labels.<k> = v`, `health`, `scope`,
+        `current_stage`, `stages.<stage> = PASSED`, `assignees.<role>`, `display_name:substr`.
+        `order_by` e.g. `create_time desc, name`.
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+        - {$ref: '#/components/parameters/Filter'}
+        - {$ref: '#/components/parameters/OrderBy'}
+        - {$ref: '#/components/parameters/ShowDeleted'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListWorkflowsResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Workflows]
+      operationId: createWorkflow
+      summary: Create a workflow
+      parameters:
+        - name: workflow_id
+          in: query
+          description: 'Reserved (AIP-133 `{resource}_id`). Client-assigned ids are not supported yet: any value is rejected with INVALID_ARGUMENT / CLIENT_ID_UNSUPPORTED. Ids are server-assigned (`wf-NNNNNN`).'
+          deprecated: true
+          schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,62}$'}
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Workflow'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    get:
+      tags: [Workflows]
+      operationId: getWorkflow
+      summary: Get a workflow
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Workflows]
+      operationId: updateWorkflow
+      summary: Update a workflow
+      description: |
+        Updatable via mask: `display_name`, `labels`, `annotations`, `assignees`, `stages`
+        (stage state changes follow the rule table; NOT_APPLICABLE and OPEN need a `reason`).
+        `scope` and `merged_into` change only through `:setScope`.
+      parameters:
+        - {$ref: '#/components/parameters/UpdateMask'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWorkflowRequest'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Workflows]
+      operationId: deleteWorkflow
+      summary: Soft-delete a workflow (sets delete_time)
+      description: 'Idempotent: a workflow that is already deleted is returned unchanged (no new event). The deleted workflow stays readable with `getWorkflow` and `show_deleted`.'
+      parameters:
+        - {$ref: '#/components/parameters/EtagQuery'}
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}:undelete:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Workflows]
+      operationId: undeleteWorkflow
+      summary: Restore a soft-deleted workflow
+      description: 'Idempotent: a workflow that is not deleted is returned unchanged.'
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}:advanceStage:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Workflows]
+      operationId: advanceStage
+      summary: Mark a stage PASSED
+      description: |
+        Every earlier stage must be PASSED or NOT_APPLICABLE (else FAILED_PRECONDITION/STAGE_ORDER_VIOLATION).
+        Which side may advance which stage is decided by the rule table (else PERMISSION_DENIED/SIDE_NOT_ALLOWED).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdvanceStageRequest'}
+            example:
+              stage: development
+              note: Code merged
+              evidence_attachments: [projects/acme-dw/workflows/wf-000123/attachments/at-000009]
+              etag: ev-8101
+              request_id: 7d1f3c52-2f0e-4c53-9d1a-6a9c0f3a1b11
+      responses:
+        '200':
+          description: The workflow after the change (or as it would be, with validate_only).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Workflow'}
+              example:
+                name: projects/acme-dw/workflows/wf-000123
+                uid: '123'
+                display_name: daily_loader
+                etag: ev-8102
+                labels: {domain: dwh, priority: b1}
+                assignees: {dev_owner: accounts/alice}
+                stages:
+                  - {stage: development, state: PASSED}
+                  - {stage: deployment, state: OPEN}
+                  - {stage: verify, state: OPEN}
+                scope: IN_SCOPE
+                health: NORMAL
+                current_stage: deployment
+                creator: accounts/alice
+                create_time: '2026-10-01T02:00:00Z'
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}:regressStage:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Workflows]
+      operationId: regressStage
+      summary: Set PASSED stages back to OPEN in one event
+      description: A reject-kind `reason` is required (REASON_REQUIRED). A stage that is not PASSED yields NOT_REGRESSIBLE.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RegressStageRequest'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}:setScope:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Workflows]
+      operationId: setScope
+      summary: Move a workflow in or out of migration scope
+      description: |
+        OUT_OF_SCOPE needs a discard-kind `reason`; with reason `merged`, `merged_into` is required and
+        must not be the workflow itself or form a cycle (MERGE_CYCLE). Returning to IN_SCOPE keeps all stage states.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SetScopeRequest'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Workflow'}
+        default: {$ref: '#/components/responses/Error'}
+
+  # -------------------------------------------------------------------- tasks
+  /v1/projects/{project}/tasks:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      summary: List tasks
+      description: '`filter` additionally supports `workflows.workflow = "projects/p/workflows/w"`.'
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+        - {$ref: '#/components/parameters/Filter'}
+        - {$ref: '#/components/parameters/OrderBy'}
+        - {$ref: '#/components/parameters/ShowDeleted'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListTasksResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Tasks]
+      operationId: createTask
+      summary: Create a task
+      parameters:
+        - name: task_id
+          in: query
+          description: 'Reserved (AIP-133 `{resource}_id`). Client-assigned ids are not supported yet: any value is rejected with INVALID_ARGUMENT / CLIENT_ID_UNSUPPORTED. Ids are server-assigned (`tk-NNNNNN`).'
+          deprecated: true
+          schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,62}$'}
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/tasks/{task}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Get a task
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Tasks]
+      operationId: updateTask
+      summary: Update a task
+      description: Updatable via mask - `display_name`, `labels`, `annotations`, `assignees`. Membership changes use `:assign`.
+      parameters:
+        - {$ref: '#/components/parameters/UpdateMask'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateTaskRequest'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Tasks]
+      operationId: deleteTask
+      summary: Soft-delete a task
+      description: 'Idempotent: a task that is already deleted is returned unchanged.'
+      parameters:
+        - {$ref: '#/components/parameters/EtagQuery'}
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/tasks/{task}:undelete:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
+    post:
+      tags: [Tasks]
+      operationId: undeleteTask
+      summary: Restore a soft-deleted task
+      description: 'Idempotent: a task that is not deleted is returned unchanged.'
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/tasks/{task}:assign:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/TaskP'}]
+    post:
+      tags: [Tasks]
+      operationId: assignTask
+      summary: Attach a task to a workflow, change its membership, or detach it
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AssignTaskRequest'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Task'}
+        default: {$ref: '#/components/responses/Error'}
+
+  # ----------------------------------------------------------------- comments
+  /v1/projects/{project}/workflows/{workflow}/comments:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    get:
+      tags: [Comments]
+      operationId: listComments
+      summary: List comments of a workflow
+      description: '`filter` supports `kind`, `resolved`, `side`, `creator`.'
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+        - {$ref: '#/components/parameters/Filter'}
+        - {$ref: '#/components/parameters/OrderBy'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListCommentsResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Comments]
+      operationId: createComment
+      summary: Add a comment (body is immutable afterwards)
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Comment'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/comments/{comment}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
+    get:
+      tags: [Comments]
+      operationId: getComment
+      summary: Get a comment
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Comments]
+      operationId: deleteComment
+      summary: Soft-delete a comment (comments are never edited)
+      description: 'Returns the comment as it was. Afterwards the comment is hidden: `getComment` answers 404 and `listComments` omits it (Comment has no `delete_time` and there is no undelete). Deleting a deleted comment is 404.'
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/comments/{comment}:resolve:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
+    post:
+      tags: [Comments]
+      operationId: resolveComment
+      summary: Mark a comment resolved
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/comments/{comment}:reopen:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/CommentP'}]
+    post:
+      tags: [Comments]
+      operationId: reopenComment
+      summary: Mark a resolved comment unresolved
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Comment'}
+        default: {$ref: '#/components/responses/Error'}
+
+  # -------------------------------------------------------------- attachments
+  /v1/projects/{project}/workflows/{workflow}/attachments:initUpload:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Attachments]
+      operationId: initAttachmentUpload
+      summary: Get a presigned upload URL (max 100 MiB)
+      description: Upload the bytes to `upload_url` with HTTP PUT, then register them with `createAttachment`.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/InitUploadRequest'}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/InitUploadResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/attachments:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    post:
+      tags: [Attachments]
+      operationId: createAttachment
+      summary: Register uploaded bytes as an attachment (metadata only)
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/ValidateOnly'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Attachment'}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Attachment'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/attachments/{attachment}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/AttachmentP'}]
+    get:
+      tags: [Attachments]
+      operationId: getAttachment
+      summary: Get attachment metadata
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Attachment'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/attachments/{attachment}:download:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/AttachmentP'}]
+    get:
+      tags: [Attachments]
+      operationId: downloadAttachment
+      summary: Get a short-lived download URL
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/DownloadAttachmentResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  # ------------------------------------------------------------------- events
+  /v1/projects/{project}/workflows/{workflow}/events:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}]
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: List audit events (read-only, append-only)
+      description: '`filter` supports `actor`, `side`, `channel`, `reason`, `event_time`, `create_time` comparisons. `as_of` bounds by `create_time`.'
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+        - {$ref: '#/components/parameters/Filter'}
+        - {$ref: '#/components/parameters/OrderBy'}
+        - {$ref: '#/components/parameters/AsOf'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListEventsResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/workflows/{workflow}/events/{event}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/WorkflowP'}, {$ref: '#/components/parameters/EventP'}]
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Get an event
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  # -------------------------------------------------------------------- query
+  /v1/projects/{project}:query:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    post:
+      tags: [Query]
+      operationId: query
+      summary: Read-only SQL over the documented views
+      description: |
+        A single SELECT over the views `workflows`, `tasks`, `events`, `comments`, `workflow_stages`,
+        `stage_distribution`, `open_items`. Anything else is INVALID_ARGUMENT. Rows and run time are capped.
+        `page_size` above 1000 is coerced to 1000 (default 1000). `as_of` is accepted by the schema but
+        currently rejected with INVALID_ARGUMENT / AS_OF_UNSUPPORTED; use `listEvents` for point-in-time history.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/QueryRequest'}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/QueryResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  # --------------------------------------------------------------- importJobs
+  /v1/projects/{project}/importJobs:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    post:
+      tags: [ImportJobs]
+      operationId: createImportJob
+      summary: Stage rows for import (does not change any workflow)
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}
+      responses:
+        '200': {$ref: '#/components/responses/ImportJob'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/importJobs/{importJob}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
+    get:
+      tags: [ImportJobs]
+      operationId: getImportJob
+      summary: Get an import job (also the way to poll an apply/rollback Operation)
+      responses:
+        '200': {$ref: '#/components/responses/ImportJob'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/importJobs/{importJob}:diff:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
+    get:
+      tags: [ImportJobs]
+      operationId: diffImportJob
+      summary: Compare staged rows with current data
+      description: '`filter` supports `action`.'
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+        - {$ref: '#/components/parameters/Filter'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/DiffImportJobResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/importJobs/{importJob}:apply:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
+    post:
+      tags: [ImportJobs]
+      operationId: applyImportJob
+      summary: Confirm and merge a staged job (admin)
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/importJobs/{importJob}:rollback:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/ImportJobP'}]
+    post:
+      tags: [ImportJobs]
+      operationId: rollbackImportJob
+      summary: Roll back a whole applied job (admin)
+      requestBody: {$ref: '#/components/requestBodies/Mutation'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+
+  # -------------------------------------------------------------------- admin
+  /v1/projects/{project}/members:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    get:
+      tags: [Admin]
+      operationId: listMembers
+      summary: List project members
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListMembersResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/members/{account}:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}, {$ref: '#/components/parameters/AccountP'}]
+    put:
+      tags: [Admin]
+      operationId: setMember
+      summary: Add a member or change role/side (admin; agents cannot be ADMIN)
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Member'}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Member'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [Admin]
+      operationId: removeMember
+      summary: Remove a member (admin)
+      responses:
+        '204': {description: Removed}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{account}/tokens:
+    parameters: [{$ref: '#/components/parameters/AccountP'}]
+    get:
+      tags: [Admin]
+      operationId: listTokens
+      summary: List tokens of an account (no secrets)
+      parameters:
+        - {$ref: '#/components/parameters/PageSize'}
+        - {$ref: '#/components/parameters/PageToken'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListTokensResponse'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      tags: [Admin]
+      operationId: createToken
+      summary: Create a token; the secret is returned once
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Token'}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Token'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/accounts/{account}/tokens/{token}:revoke:
+    parameters: [{$ref: '#/components/parameters/AccountP'}, {name: token, in: path, required: true, description: 'Token id (decimal).', schema: {type: string}}]
+    post:
+      tags: [Admin]
+      operationId: revokeToken
+      summary: Revoke a token
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Token'}}}}
+        default: {$ref: '#/components/responses/Error'}
+
+  /v1/projects/{project}/config:
+    parameters: [{$ref: '#/components/parameters/ProjectP'}]
+    get:
+      tags: [Admin]
+      operationId: getConfig
+      summary: Get project configuration (stages, reasons, rules, settings)
+      responses:
+        '200': {$ref: '#/components/responses/Config'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      tags: [Admin]
+      operationId: updateConfig
+      summary: Update project configuration (admin)
+      parameters:
+        - {$ref: '#/components/parameters/UpdateMask'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Config'}}}
+      responses:
+        '200': {$ref: '#/components/responses/Config'}
+        default: {$ref: '#/components/responses/Error'}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, description: 'API token; inherits the member identity (no separate scopes).'}
+
+  parameters:
+    ProjectP: {name: project, in: path, required: true, description: 'Project id (lowercase slug).', schema: {type: string, pattern: '^[a-z][a-z0-9-]*$', example: acme-dw}}
+    WorkflowP: {name: workflow, in: path, required: true, description: 'Workflow id, e.g. wf-000123.', schema: {type: string, example: wf-000123}}
+    TaskP: {name: task, in: path, required: true, description: 'Task id, e.g. tk-004567.', schema: {type: string, example: tk-004567}}
+    CommentP: {name: comment, in: path, required: true, description: 'Comment id, e.g. cm-000031.', schema: {type: string}}
+    AttachmentP: {name: attachment, in: path, required: true, description: 'Attachment id, e.g. at-000009.', schema: {type: string}}
+    EventP: {name: event, in: path, required: true, description: 'Event id, e.g. ev-8102.', schema: {type: string}}
+    ImportJobP: {name: importJob, in: path, required: true, description: 'Import job id (decimal).', schema: {type: string}}
+    AccountP: {name: account, in: path, required: true, description: 'Account id (the part after `accounts/`).', schema: {type: string}}
+    PageSize: {name: page_size, in: query, description: 'Max items; server default 50, max 1000 (larger values are coerced to the maximum; negative is INVALID_ARGUMENT).', schema: {type: integer, minimum: 0, maximum: 1000}}
+    PageToken: {name: page_token, in: query, description: 'Opaque, from next_page_token.', schema: {type: string}}
+    Filter: {name: filter, in: query, description: 'AIP-160 filter expression.', schema: {type: string}}
+    OrderBy: {name: order_by, in: query, description: 'Comma-separated fields, optional `desc`.', schema: {type: string}}
+    ShowDeleted: {name: show_deleted, in: query, description: 'Include soft-deleted resources.', schema: {type: boolean}}
+    UpdateMask: {name: update_mask, in: query, required: true, description: 'Comma-separated field paths to update.', schema: {type: string, example: 'display_name,labels'}}
+    EtagQuery: {name: etag, in: query, description: 'Expected etag; mismatch is ABORTED/ETAG_MISMATCH.', schema: {type: string}}
+    RequestId: {name: request_id, in: query, description: 'Idempotency key: a UUID is recommended (the body field `request_id` must be one); the server accepts any string of at most 64 characters here. A repeat with the same key and the same request returns the first result; with a different request it is 409 ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED.', schema: {type: string, maxLength: 64}}
+    ValidateOnly: {name: validate_only, in: query, description: 'Validate and apply rules, write nothing.', schema: {type: boolean}}
+    AsOf: {name: as_of, in: query, description: 'Point-in-time view of the data.', schema: {type: string, format: date-time}}
+
+  requestBodies:
+    Mutation:
+      required: false
+      content: {application/json: {schema: {$ref: '#/components/schemas/MutationOptions'}}}
+
+  responses:
+    Error:
+      description: |
+        Error. Statuses: INVALID_ARGUMENT 400, UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
+        NOT_FOUND 404, ALREADY_EXISTS 409, ABORTED 409 (ETAG_MISMATCH),
+        FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE),
+        RESOURCE_EXHAUSTED 429 (with Retry-After), UNIMPLEMENTED 501, INTERNAL 500.
+        Every error carries exactly one ErrorInfo (reason matches [A-Z][A-Z0-9_]+[A-Z0-9], domain `openetl`).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          examples:
+            etagMismatch: {$ref: '#/components/examples/EtagMismatch'}
+    Workflow: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Workflow'}}}}
+    Task: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+    Comment: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Comment'}}}}
+    ImportJob: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ImportJob'}}}}
+    Config: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Config'}}}}
+    Operation: {description: 'Long-running operation; response is the ImportJob.', content: {application/json: {schema: {$ref: '#/components/schemas/Operation'}}}}
+
+  examples:
+    EtagMismatch:
+      summary: Concurrent change detected
+      value:
+        error:
+          code: 409
+          status: ABORTED
+          message: The workflow changed since the supplied etag was read.
+          details:
+            - '@type': ErrorInfo
+              reason: ETAG_MISMATCH
+              domain: openetl
+              metadata: {name: projects/acme-dw/workflows/wf-000123, current_etag: ev-8102}
+
+  schemas:
+    # ---------------------------------------------------------------- shared
+    Error:
+      type: object
+      description: 'AIP-193 error envelope (google.rpc.Status as JSON): code is the HTTP status, status the canonical code name, details[0] the ErrorInfo.'
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, status, message]
+          properties:
+            code: {type: integer, description: HTTP status code., example: 409}
+            status:
+              type: string
+              enum: [INVALID_ARGUMENT, UNAUTHENTICATED, PERMISSION_DENIED, NOT_FOUND, ALREADY_EXISTS, ABORTED, FAILED_PRECONDITION, RESOURCE_EXHAUSTED, UNIMPLEMENTED, INTERNAL]
+            message: {type: string}
+            details: {type: array, items: {$ref: '#/components/schemas/ErrorInfo'}}
+    ErrorInfo:
+      type: object
+      description: 'Machine-readable error identity; (reason, domain) is stable per kind of error, metadata keys only grow.'
+      required: ['@type', reason, domain]
+      properties:
+        '@type': {type: string, enum: [ErrorInfo]}
+        reason: {type: string, description: 'Machine-readable, e.g. ETAG_MISMATCH, SIDE_NOT_ALLOWED, STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE.', example: ETAG_MISMATCH}
+        domain: {type: string, example: openetl}
+        metadata: {type: object, additionalProperties: {type: string}}
+    AnyValue: {nullable: true, description: 'Any JSON value.'}
+    Labels: {type: object, additionalProperties: {type: string}, description: 'Lowercase keys and values; filterable.'}
+    Annotations: {type: object, additionalProperties: {type: string}, description: 'Free text; not filterable.'}
+    Assignees: {type: object, additionalProperties: {type: string, description: 'accounts/{account}'}, description: 'Role (e.g. dev_owner, customer_pic, verify_pic) to account.', example: {dev_owner: accounts/alice}}
+    Source:
+      type: object
+      description: Where the record was imported from.
+      properties:
+        system: {type: string}
+        reference: {type: string}
+        row_hash: {type: string, description: Hash of the whole source row.}
+    MutationOptions:
+      type: object
+      description: Fields common to mutating calls.
+      properties:
+        etag: {type: string, description: Expected etag of the target (derived from its latest event).}
+        reason: {type: string, description: 'reason_key from the project config, e.g. rej_row_count.'}
+        note: {type: string}
+        request_id: {type: string, format: uuid}
+        validate_only: {type: boolean}
+    Side: {type: string, description: 'Which party acted; SYSTEM for imports and automation.', enum: [SIDE_UNSPECIFIED, DELIVERY, CUSTOMER, SYSTEM]}
+    MemberSide: {type: string, enum: [SIDE_UNSPECIFIED, DELIVERY, CUSTOMER]}
+    StageState: {type: string, description: 'State of one stage of one workflow.', enum: [STATE_UNSPECIFIED, OPEN, PASSED, NOT_APPLICABLE]}
+    Scope: {type: string, description: 'Whether the workflow is part of the migration.', enum: [SCOPE_UNSPECIFIED, IN_SCOPE, OUT_OF_SCOPE]}
+    Health: {type: string, description: 'Derived from unresolved comments: BLOCKED by an open ISSUE, AT_RISK by an open RISK.', enum: [HEALTH_UNSPECIFIED, NORMAL, AT_RISK, BLOCKED]}
+    StageKey: {type: string, description: 'Stage key from config; defaults: development, deployment, verify, accept, dual_run, cutover.', example: development}
+    StageStatus:
+      type: object
+      required: [stage, state]
+      properties:
+        stage: {$ref: '#/components/schemas/StageKey'}
+        state: {$ref: '#/components/schemas/StageState'}
+
+    # ------------------------------------------------------------- workflows
+    Workflow:
+      type: object
+      description: '`display_name` is required on create (enforced by the server) but not on sparse updates.'
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/workflows/wf-000123}
+        uid: {type: string, readOnly: true}
+        display_name: {type: string}
+        etag: {type: string, readOnly: true}
+        labels: {$ref: '#/components/schemas/Labels'}
+        annotations: {$ref: '#/components/schemas/Annotations'}
+        assignees: {$ref: '#/components/schemas/Assignees'}
+        stages: {type: array, items: {$ref: '#/components/schemas/StageStatus'}}
+        scope: {allOf: [{$ref: '#/components/schemas/Scope'}], readOnly: true, description: 'Changed via :setScope.'}
+        merged_into: {type: string, readOnly: true, description: 'Workflow resource name; set when OUT_OF_SCOPE because merged.'}
+        health: {allOf: [{$ref: '#/components/schemas/Health'}], readOnly: true, description: 'Derived from unresolved comments.'}
+        current_stage: {type: string, readOnly: true, description: 'First stage not PASSED/NOT_APPLICABLE; empty when done.'}
+        source: {$ref: '#/components/schemas/Source'}
+        creator: {type: string, readOnly: true, example: accounts/alice}
+        create_time: {type: string, format: date-time, readOnly: true}
+        delete_time: {type: string, format: date-time, readOnly: true}
+    UpdateWorkflowRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [workflow]
+          properties:
+            workflow: {$ref: '#/components/schemas/Workflow'}
+    AdvanceStageRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [stage]
+          properties:
+            stage: {$ref: '#/components/schemas/StageKey'}
+            evidence_attachments: {type: array, items: {type: string, description: Attachment resource name.}}
+    RegressStageRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [stages, reason]
+          properties:
+            stages: {type: array, minItems: 1, items: {$ref: '#/components/schemas/StageKey'}}
+            reason: {type: string, description: 'reject-kind reason_key.'}
+    SetScopeRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [scope]
+          properties:
+            scope: {$ref: '#/components/schemas/Scope'}
+            merged_into: {type: string, description: 'Workflow resource name; required when reason is merged.'}
+    ListWorkflowsResponse:
+      type: object
+      properties:
+        workflows: {type: array, items: {$ref: '#/components/schemas/Workflow'}}
+        next_page_token: {type: string}
+
+    # ----------------------------------------------------------------- tasks
+    TaskMembership:
+      type: object
+      required: [workflow]
+      properties:
+        workflow: {type: string, description: Workflow resource name.}
+        primary: {type: boolean, description: At most one primary per task.}
+    Task:
+      type: object
+      required: [display_name]
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/tasks/tk-004567}
+        uid: {type: string, readOnly: true}
+        display_name: {type: string}
+        etag: {type: string, readOnly: true}
+        labels: {$ref: '#/components/schemas/Labels'}
+        annotations: {$ref: '#/components/schemas/Annotations'}
+        assignees: {$ref: '#/components/schemas/Assignees'}
+        workflows: {type: array, readOnly: true, description: 'Changed via :assign (initial list allowed on create).', items: {$ref: '#/components/schemas/TaskMembership'}}
+        source: {$ref: '#/components/schemas/Source'}
+        creator: {type: string, readOnly: true}
+        create_time: {type: string, format: date-time, readOnly: true}
+        delete_time: {type: string, format: date-time, readOnly: true}
+    UpdateTaskRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [task]
+          properties:
+            task: {$ref: '#/components/schemas/Task'}
+    AssignTaskRequest:
+      allOf:
+        - {$ref: '#/components/schemas/MutationOptions'}
+        - type: object
+          required: [workflow, membership]
+          properties:
+            workflow: {type: string, description: Workflow resource name.}
+            membership:
+              type: string
+              enum: [MEMBERSHIP_UNSPECIFIED, PRIMARY, SHARED, NONE]
+              description: NONE detaches the task from the workflow.
+    ListTasksResponse:
+      type: object
+      properties:
+        tasks: {type: array, items: {$ref: '#/components/schemas/Task'}}
+        next_page_token: {type: string}
+
+    # -------------------------------------------------------------- comments
+    Comment:
+      type: object
+      required: [kind, body]
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/workflows/wf-000123/comments/cm-000031}
+        uid: {type: string, readOnly: true}
+        etag: {type: string, readOnly: true}
+        kind: {type: string, enum: [KIND_UNSPECIFIED, NOTE, QUESTION, ISSUE, RISK]}
+        body: {type: string, description: Immutable after creation.}
+        attachments: {type: array, items: {type: string, description: Attachment resource name.}}
+        resolved: {type: boolean, readOnly: true}
+        resolve_time: {type: string, format: date-time, readOnly: true}
+        creator: {type: string, readOnly: true}
+        side: {allOf: [{$ref: '#/components/schemas/Side'}], readOnly: true}
+        create_time: {type: string, format: date-time, readOnly: true}
+        event_time: {type: string, format: date-time, description: 'When it happened; defaults to now, never later than create_time.'}
+    ListCommentsResponse:
+      type: object
+      properties:
+        comments: {type: array, items: {$ref: '#/components/schemas/Comment'}}
+        next_page_token: {type: string}
+
+    # ----------------------------------------------------------- attachments
+    InitUploadRequest:
+      type: object
+      required: [filename, size]
+      properties:
+        filename: {type: string}
+        size: {type: integer, format: int64, minimum: 1, maximum: 104857600, description: Bytes; cap 100 MiB.}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+    InitUploadResponse:
+      type: object
+      properties:
+        storage_key: {type: string}
+        upload_url: {type: string, format: uri, description: Presigned HTTP PUT URL.}
+        upload_headers: {type: object, additionalProperties: {type: string}}
+        expire_time: {type: string, format: date-time}
+    Attachment:
+      type: object
+      required: [filename, size, sha256, storage_key]
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/workflows/wf-000123/attachments/at-000009}
+        uid: {type: string, readOnly: true}
+        filename: {type: string}
+        size: {type: integer, format: int64, maximum: 104857600}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        storage_key: {type: string, description: From initUpload.}
+        creator: {type: string, readOnly: true}
+        create_time: {type: string, format: date-time, readOnly: true}
+    DownloadAttachmentResponse:
+      type: object
+      properties:
+        download_url: {type: string, format: uri}
+        expire_time: {type: string, format: date-time}
+
+    # ---------------------------------------------------------------- events
+    Event:
+      type: object
+      description: One audited write on one entity; contains one or more key changes.
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/workflows/wf-000123/events/ev-8102}
+        uid: {type: string, readOnly: true}
+        target: {type: string, readOnly: true, description: Resource name of the changed entity.}
+        actor: {type: string, readOnly: true, description: 'accounts/{account}'}
+        side: {allOf: [{$ref: '#/components/schemas/Side'}], readOnly: true}
+        channel: {type: string, readOnly: true, enum: [CHANNEL_UNSPECIFIED, CLI, API, IMPORT, LEGACY]}
+        reason: {type: string, readOnly: true}
+        note: {type: string, readOnly: true}
+        request_id: {type: string, readOnly: true}
+        corrects: {type: string, readOnly: true, description: Event this one corrects.}
+        changes:
+          type: array
+          readOnly: true
+          items:
+            type: object
+            properties:
+              key: {type: string, example: stage.development}
+              old_value: {$ref: '#/components/schemas/AnyValue'}
+              new_value: {$ref: '#/components/schemas/AnyValue'}
+        event_time: {type: string, format: date-time, readOnly: true, description: Business time.}
+        create_time: {type: string, format: date-time, readOnly: true, description: Recording time.}
+    ListEventsResponse:
+      type: object
+      properties:
+        events: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        next_page_token: {type: string}
+
+    # ----------------------------------------------------------------- query
+    QueryRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql: {type: string, example: 'SELECT stage, health, workflows FROM stage_distribution'}
+        page_size: {type: integer, minimum: 0, maximum: 10000, description: 'Default 1000; values above 1000 are coerced to 1000.'}
+        page_token: {type: string}
+        as_of: {type: string, format: date-time, deprecated: true, description: 'Not supported: any value is rejected with AS_OF_UNSUPPORTED.'}
+    QueryResponse:
+      type: object
+      properties:
+        columns: {type: array, items: {type: object, properties: {name: {type: string}, type: {type: string}}}}
+        rows: {type: array, items: {type: array, items: {$ref: '#/components/schemas/AnyValue'}}}
+        next_page_token: {type: string}
+
+    # ----------------------------------------------------------- import jobs
+    ImportRow:
+      type: object
+      required: [source, data]
+      properties:
+        source: {$ref: '#/components/schemas/Source'}
+        data: {$ref: '#/components/schemas/Workflow'}
+        tasks:
+          type: array
+          description: 'Tasks of this workflow (primary link). Matched on re-import by the row system + source.reference, which is required.'
+          items: {$ref: '#/components/schemas/ImportTask'}
+    ImportTask:
+      type: object
+      required: [source, data]
+      properties:
+        source: {$ref: '#/components/schemas/Source'}
+        data: {$ref: '#/components/schemas/Task'}
+    ImportAction: {type: string, enum: [ACTION_UNSPECIFIED, NEW, CHANGED, UNCHANGED, MISSING, CONFLICT, SUSPECT, TASK_NEW, TASK_CHANGED, TASK_UNCHANGED, TASK_MISSING, TASK_CONFLICT]}
+    ImportJob:
+      type: object
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/importJobs/17}
+        uid: {type: string, readOnly: true}
+        source: {type: string, description: 'Source system label.'}
+        rows: {type: array, writeOnly: true, items: {$ref: '#/components/schemas/ImportRow'}}
+        state: {type: string, readOnly: true, enum: [STATE_UNSPECIFIED, STAGED, APPLIED, FAILED, ROLLED_BACK]}
+        summary: {type: object, readOnly: true, description: 'Row counts keyed by ImportAction, plus INVALID, and after apply CREATED, UPDATED, SKIPPED and TASK_CREATED, TASK_UPDATED, TASK_SKIPPED.', additionalProperties: {type: integer}}
+        row_errors:
+          type: array
+          readOnly: true
+          description: Staged rows that failed validation (left out of the diff). Only returned by createImportJob.
+          items:
+            type: object
+            properties:
+              row_no: {type: integer, description: 1-based.}
+              reason: {type: string}
+              message: {type: string}
+        creator: {type: string, readOnly: true}
+        create_time: {type: string, format: date-time, readOnly: true}
+        apply_time: {type: string, format: date-time, readOnly: true}
+    DiffImportJobResponse:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              row_no: {type: integer}
+              source: {$ref: '#/components/schemas/Source'}
+              action: {$ref: '#/components/schemas/ImportAction'}
+              match: {type: string, description: Matched workflow resource name.}
+              changes: {type: array, items: {type: object, properties: {key: {type: string}, old_value: {$ref: '#/components/schemas/AnyValue'}, new_value: {$ref: '#/components/schemas/AnyValue'}, kind: {type: string, enum: [source, fill, conflict], description: Extension.}}}}
+        next_page_token: {type: string}
+    Operation:
+      type: object
+      description: 'Shaped like google.longrunning.Operation but synchronous: `done` is always true and `name` is the import job name. There is no Operations service and no metadata.'
+      required: [name, done]
+      properties:
+        name: {type: string, example: projects/acme-dw/importJobs/17}
+        done: {type: boolean}
+        response: {$ref: '#/components/schemas/ImportJob'}
+        error: {allOf: [{$ref: '#/components/schemas/Error'}], description: Set when done and failed.}
+
+    # ----------------------------------------------------------------- admin
+    AccountKind: {type: string, enum: [KIND_UNSPECIFIED, HUMAN, AGENT]}
+    Role: {type: string, enum: [ROLE_UNSPECIFIED, VIEWER, EDITOR, ADMIN]}
+    Member:
+      type: object
+      required: [role, side]
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/members/alice}
+        account: {type: string, readOnly: true, example: accounts/alice}
+        role: {$ref: '#/components/schemas/Role'}
+        side: {$ref: '#/components/schemas/MemberSide'}
+        create_time: {type: string, format: date-time, readOnly: true}
+    ListMembersResponse:
+      type: object
+      properties:
+        members: {type: array, items: {$ref: '#/components/schemas/Member'}}
+        next_page_token: {type: string}
+    Me:
+      type: object
+      properties:
+        account: {type: string, example: accounts/alice}
+        display_name: {type: string}
+        kind: {$ref: '#/components/schemas/AccountKind'}
+        memberships: {type: array, items: {$ref: '#/components/schemas/Member'}}
+    Token:
+      type: object
+      properties:
+        name: {type: string, readOnly: true, example: accounts/alice/tokens/9}
+        secret: {type: string, readOnly: true, description: Plaintext; returned only by createToken.}
+        expire_time: {type: string, format: date-time}
+        revoke_time: {type: string, format: date-time, readOnly: true}
+        create_time: {type: string, format: date-time, readOnly: true}
+    ListTokensResponse:
+      type: object
+      properties:
+        tokens: {type: array, items: {$ref: '#/components/schemas/Token'}}
+        next_page_token: {type: string}
+    Config:
+      type: object
+      properties:
+        name: {type: string, readOnly: true, example: projects/acme-dw/config}
+        etag: {type: string, readOnly: true}
+        stages:
+          type: array
+          description: Stage order and names.
+          items:
+            type: object
+            required: [stage, seq]
+            properties:
+              stage: {$ref: '#/components/schemas/StageKey'}
+              seq: {type: integer, minimum: 1}
+              name_zh: {type: string}
+              name_en: {type: string}
+        reasons:
+          type: array
+          items:
+            type: object
+            required: [reason, kind]
+            properties:
+              reason: {type: string, description: reason_key, example: rej_row_count}
+              kind: {type: string, enum: [KIND_UNSPECIFIED, GATE_OVERRIDE, DISCARD, NOT_APPLICABLE, REJECT]}
+              owner_side: {type: string, enum: [OWNER_SIDE_UNSPECIFIED, DELIVERY, CUSTOMER, UNKNOWN], description: 'Responsible party, used for blocker statistics only.'}
+              name_zh: {type: string}
+              name_en: {type: string}
+              note_required: {type: boolean}
+              active: {type: boolean}
+        rules:
+          type: array
+          description: A change to a key matching any k_pattern must satisfy one matching rule; unmatched keys are editable by editors.
+          items:
+            type: object
+            required: [k_pattern, side]
+            properties:
+              k_pattern: {type: string, description: 'SQL LIKE pattern on the key, e.g. stage.%', example: stage.verify}
+              to_value: {type: string, nullable: true, description: Null means any value.}
+              side: {type: string, enum: [SIDE_UNSPECIFIED, DELIVERY, CUSTOMER, ANY]}
+              reason_kind: {type: string, nullable: true, enum: [KIND_UNSPECIFIED, GATE_OVERRIDE, DISCARD, NOT_APPLICABLE, REJECT], description: Required reason kind; null for none.}
+        settings: {type: object, nullable: true, additionalProperties: {type: string}, description: 'Key/value settings; secrets are stored as references only. null (omitted by non-admin readers).'}

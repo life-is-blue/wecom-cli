@@ -52,39 +52,50 @@ func (p *filterParser) peekWord() string {
 	return string(p.s[p.i:j])
 }
 
+// parseOr parses one parenthesis level. AIP-160 and SQL disagree on whether AND or OR binds
+// tighter, so a level that mixes the two without parentheses is rejected instead of guessed.
 func (p *filterParser) parseOr() (string, []any, error) {
-	l, la, err := p.parseAnd()
+	l, la, anded, err := p.parseAnd()
 	if err != nil {
 		return "", nil, err
 	}
+	ors := 0
 	for strings.EqualFold(p.peekWord(), "OR") {
 		p.i += 2
-		r, ra, err := p.parseAnd()
+		ors++
+		r, ra, a2, err := p.parseAnd()
 		if err != nil {
 			return "", nil, err
 		}
+		anded = anded || a2
 		l, la = "("+l+" OR "+r+")", append(la, ra...)
+	}
+	if ors > 0 && anded {
+		return "", nil, core.NewError(core.StatusInvalidArgument, "AMBIGUOUS_FILTER",
+			"the filter mixes AND (or implicit AND) with OR without parentheses; add parentheses, e.g. (a AND b) OR c")
 	}
 	return l, la, nil
 }
 
-func (p *filterParser) parseAnd() (string, []any, error) {
+func (p *filterParser) parseAnd() (string, []any, bool, error) {
 	l, la, err := p.parseUnary()
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
+	anded := false
 	for {
 		w := p.peekWord()
 		if w == "" || w == ")" || strings.EqualFold(w, "OR") {
-			return l, la, nil
+			return l, la, anded, nil
 		}
+		anded = true
 		if strings.EqualFold(w, "AND") {
 			p.skipWS()
 			p.i += 3
 		}
 		r, ra, err := p.parseUnary()
 		if err != nil {
-			return "", nil, err
+			return "", nil, false, err
 		}
 		l, la = "("+l+" AND "+r+")", append(la, ra...)
 	}
