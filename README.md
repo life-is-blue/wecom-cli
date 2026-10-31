@@ -19,6 +19,20 @@ Migration progress management platform: records the progress of migrating workfl
 | `skills/` | Agent Skills (`openetl-shared` preflight first) |
 | `docs/` | Design notes |
 
+## Quick start (development)
+
+```bash
+# an empty MySQL 8.0 / MariaDB database, then:
+export OPENETL_DB_DSN='user:pw@tcp(127.0.0.1:3306)/openetl_demo?parseTime=true&multiStatements=true'
+scripts/demo.sh                      # builds, migrates, runs the gateway and walks through the M1 scenario
+OPENETL_TEST_DSN=$OPENETL_DB_DSN go test ./...   # DB tests skip when the DSN is unset
+```
+
+`openetl-gateway admin create-token` mints the first token (shown once, only its hash is stored);
+`openetl auth login --token-stdin` stores it encrypted on the client, or set `OPENETL_TOKEN`.
+
 ## Status
 
-M0 (contract) in progress. Design: see `docs/design.md`.
+M0 (contract) done. M1 (gateway, CLI, first Skills) done and covered by `scripts/demo.sh`;
+verified on MariaDB 10.11 only, not yet on MySQL 8.0. Not yet built: attachments, import jobs,
+members/tokens/config endpoints (M2). Design: see `docs/design.md`.
