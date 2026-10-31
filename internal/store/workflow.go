@@ -72,7 +72,7 @@ func (e *Entity) assignees() *api.Assignees {
 func RenderWorkflow(p Project, cfg core.Config, e *Entity, currentStage, health string) api.Workflow {
 	id := strconv.FormatInt(e.ID, 10)
 	w := api.Workflow{
-		DisplayName: e.str("name"),
+		DisplayName: ptrStr(e.str("name")),
 		Uid:         &id,
 		Labels:      e.labels(),
 		Annotations: e.annotations(),
@@ -310,3 +310,5 @@ func (s *Store) ListWorkflows(ctx context.Context, p Project, o ListOpts) ([]api
 	}
 	return ws, next, nil
 }
+
+func ptrStr(s string) *string { return &s }

@@ -196,11 +196,11 @@ func (s *Server) createWorkflow(q *request) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(body.DisplayName) == "" {
+	if body.DisplayName == nil || strings.TrimSpace(*body.DisplayName) == "" {
 		return invalid("INVALID_DISPLAY_NAME", "display_name is required")
 	}
 	plan := func(cur *store.Entity, _ core.Env) ([]store.PlannedChange, error) {
-		ch, err := profileChanges(&body.DisplayName, body.Labels, body.Annotations, body.Assignees, body.Source, nil, false)
+		ch, err := profileChanges(body.DisplayName, body.Labels, body.Annotations, body.Assignees, body.Source, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +242,7 @@ func (s *Server) updateWorkflow(q *request, id int64) error {
 			top, sub, _ := strings.Cut(path, ".")
 			switch top {
 			case "display_name":
-				ch, err = profileChanges(&w.DisplayName, nil, nil, nil, nil, cur, false)
+				ch, err = profileChanges(w.DisplayName, nil, nil, nil, nil, cur, false)
 			case "labels":
 				ch, err = nestedMapUpdate("attr.", sub, derefMap(w.Labels), cur, labelKeyRe, lowerNorm)
 			case "annotations":

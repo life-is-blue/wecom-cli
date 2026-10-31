@@ -425,7 +425,7 @@ func TestListFilterPagingAndAsOf(t *testing.T) {
 		t.Fatal("desc order")
 	}
 	ws, next, err := e.st.ListWorkflows(e.ctx, e.p, ListOpts{OrderBy: "display_name desc", PageSize: 2})
-	if err != nil || ws[0].DisplayName != "wf_4" || next == "" {
+	if err != nil || ws[0].DisplayName == nil || *ws[0].DisplayName != "wf_4" || next == "" {
 		t.Fatalf("%v %v %v", ws, next, err)
 	}
 	// filters

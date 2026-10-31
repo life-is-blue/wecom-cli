@@ -634,7 +634,7 @@ components:
         Error. Statuses: INVALID_ARGUMENT 400, UNAUTHENTICATED 401, PERMISSION_DENIED 403 (SIDE_NOT_ALLOWED),
         NOT_FOUND 404, ALREADY_EXISTS 409, ABORTED 409 (ETAG_MISMATCH),
         FAILED_PRECONDITION 400 (STAGE_ORDER_VIOLATION, REASON_REQUIRED, MERGE_CYCLE, NOT_REGRESSIBLE),
-        RESOURCE_EXHAUSTED 429, INTERNAL 500.
+        RESOURCE_EXHAUSTED 429, UNIMPLEMENTED 501, INTERNAL 500.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
@@ -674,7 +674,7 @@ components:
             code: {type: integer, description: HTTP status code., example: 409}
             status:
               type: string
-              enum: [INVALID_ARGUMENT, UNAUTHENTICATED, PERMISSION_DENIED, NOT_FOUND, ALREADY_EXISTS, ABORTED, FAILED_PRECONDITION, RESOURCE_EXHAUSTED, INTERNAL]
+              enum: [INVALID_ARGUMENT, UNAUTHENTICATED, PERMISSION_DENIED, NOT_FOUND, ALREADY_EXISTS, ABORTED, FAILED_PRECONDITION, RESOURCE_EXHAUSTED, UNIMPLEMENTED, INTERNAL]
             message: {type: string}
             details: {type: array, items: {$ref: '#/components/schemas/ErrorInfo'}}
     ErrorInfo:
@@ -721,7 +721,7 @@ components:
     # ------------------------------------------------------------- workflows
     Workflow:
       type: object
-      required: [display_name]
+      description: '`display_name` is required on create (enforced by the server) but not on sparse updates.'
       properties:
         name: {type: string, readOnly: true, example: projects/acme-dw/workflows/wf-000123}
         uid: {type: string, readOnly: true}

@@ -92,7 +92,7 @@ func (a *App) workflowCreate() *cobra.Command {
 			if err := w.noBody("create"); err != nil {
 				return err
 			}
-			body := api.Workflow{DisplayName: e.name}
+			body := api.Workflow{DisplayName: &e.name}
 			if labels != nil {
 				l := api.Labels(labels)
 				body.Labels = &l

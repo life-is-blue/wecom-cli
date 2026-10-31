@@ -194,6 +194,7 @@ const (
 	PERMISSIONDENIED   ErrorErrorStatus = "PERMISSION_DENIED"
 	RESOURCEEXHAUSTED  ErrorErrorStatus = "RESOURCE_EXHAUSTED"
 	UNAUTHENTICATED    ErrorErrorStatus = "UNAUTHENTICATED"
+	UNIMPLEMENTED      ErrorErrorStatus = "UNIMPLEMENTED"
 )
 
 // Valid indicates whether the value is a known member of the ErrorErrorStatus enum.
@@ -216,6 +217,8 @@ func (e ErrorErrorStatus) Valid() bool {
 	case RESOURCEEXHAUSTED:
 		return true
 	case UNAUTHENTICATED:
+		return true
+	case UNIMPLEMENTED:
 		return true
 	default:
 		return false
@@ -754,6 +757,7 @@ type ImportJobState string
 
 // ImportRow defines model for ImportRow.
 type ImportRow struct {
+	// Data `display_name` is required on create (enforced by the server) but not on sparse updates.
 	Data Workflow `json:"data"`
 
 	// Source Where the record was imported from.
@@ -1024,10 +1028,12 @@ type UpdateWorkflowRequest struct {
 	Reason       *string             `json:"reason,omitempty"`
 	RequestId    *openapi_types.UUID `json:"request_id,omitempty"`
 	ValidateOnly *bool               `json:"validate_only,omitempty"`
-	Workflow     Workflow            `json:"workflow"`
+
+	// Workflow `display_name` is required on create (enforced by the server) but not on sparse updates.
+	Workflow Workflow `json:"workflow"`
 }
 
-// Workflow defines model for Workflow.
+// Workflow `display_name` is required on create (enforced by the server) but not on sparse updates.
 type Workflow struct {
 	// Annotations Free text; not filterable.
 	Annotations *Annotations `json:"annotations,omitempty"`
@@ -1044,7 +1050,7 @@ type Workflow struct {
 	// CurrentStage First stage not PASSED/NOT_APPLICABLE; empty when done.
 	CurrentStage *string    `json:"current_stage,omitempty"`
 	DeleteTime   *time.Time `json:"delete_time,omitempty"`
-	DisplayName  string     `json:"display_name"`
+	DisplayName  *string    `json:"display_name,omitempty"`
 	Etag         *string    `json:"etag,omitempty"`
 
 	// Health Derived from unresolved comments.
