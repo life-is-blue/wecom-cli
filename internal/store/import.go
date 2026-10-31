@@ -629,6 +629,14 @@ func (w *bulkWriter) flush() error {
 	}
 	q := `INSERT INTO delta(event_id, entity_id, k, old_v, new_v) VALUES ` + strings.TrimSuffix(strings.Repeat("(?,?,?,?,?),", w.pendingRows), ",")
 	_, err := w.tx.ExecContext(w.ctx, q, w.pending...)
+	if err == nil { // keep the entity_latest cache in step (args per row: event, entity, key, old, new)
+		latest := make([]latestRow, 0, w.pendingRows)
+		for i := 0; i < len(w.pending); i += 5 {
+			latest = append(latest, latestRow{EventID: w.pending[i].(int64), EntityID: w.pending[i+1].(int64),
+				Key: w.pending[i+2].(string), New: w.pending[i+4].(sql.NullString)})
+		}
+		err = upsertLatest(w.ctx, w.tx, latest)
+	}
 	w.pending, w.pendingRows = w.pending[:0], 0
 	return err
 }

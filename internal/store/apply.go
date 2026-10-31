@@ -215,6 +215,7 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 		return nil, err
 	}
 	eventID, _ := r.LastInsertId()
+	var latest []latestRow
 	for _, c := range changes {
 		var ov, nv sql.NullString
 		if len(c.Old) > 0 {
@@ -227,6 +228,11 @@ func (s *Store) applyTx(ctx context.Context, tx *sql.Tx, req ChangeRequest) (res
 			eventID, entityID, c.Key, ov, nv); err != nil {
 			return nil, err
 		}
+		latest = append(latest, latestRow{EventID: eventID, EntityID: entityID, Key: c.Key, New: nv})
+	}
+	// entity_latest is a cache of delta: it moves in the same transaction (rolled back with it)
+	if err := upsertLatest(ctx, tx, latest); err != nil {
+		return nil, err
 	}
 
 	// 7. resulting state
@@ -314,7 +320,7 @@ type txEnv struct {
 
 func (e *txEnv) latest(id int64, key string) (json.RawMessage, error) {
 	var nv sql.NullString
-	err := e.q.QueryRowContext(e.ctx, `SELECT d.new_v FROM delta d WHERE d.entity_id=? AND d.k=? ORDER BY d.event_id DESC LIMIT 1`, id, key).Scan(&nv)
+	err := e.q.QueryRowContext(e.ctx, `SELECT v FROM entity_latest WHERE entity_id=? AND k=?`, id, key).Scan(&nv)
 	if isNoRows(err) || (err == nil && !nv.Valid) {
 		return nil, nil
 	}

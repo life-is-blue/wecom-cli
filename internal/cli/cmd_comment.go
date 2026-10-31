@@ -194,10 +194,14 @@ func (a *App) putFile(target string, headers *map[string]string, fi fileInfo) er
 		return runtimef("bad upload_url: %v", err)
 	}
 	base, _ := url.Parse(r.base)
-	sameHost := !u.IsAbs() || (base != nil && u.Host == base.Host)
 	if !u.IsAbs() && base != nil {
 		u = base.ResolveReference(u)
 	}
+	if err := a.checkTransport(u); err != nil {
+		return err
+	}
+	// the API token goes only to the gateway's own origin (scheme, host and port all equal)
+	sameHost := sameOrigin(u, base)
 	f, err := os.Open(fi.path)
 	if err != nil {
 		return runtimef("open %s: %v", fi.path, err)
@@ -217,7 +221,7 @@ func (a *App) putFile(target string, headers *map[string]string, fi fileInfo) er
 	if sameHost && req.Header.Get("Authorization") == "" {
 		req.Header.Set("Authorization", "Bearer "+r.token)
 	}
-	resp, err := a.HTTP.Do(req)
+	resp, err := a.httpFor(r.base).Do(req)
 	if err != nil {
 		return runtimef("upload %s: %v", fi.name, scrub(err, r.token))
 	}

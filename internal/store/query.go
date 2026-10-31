@@ -15,9 +15,46 @@ import (
 
 const (
 	queryTimeout   = 15 * time.Second
+	queryStmtMS    = 10000 // server-side statement timeout in milliseconds
 	queryDefaultPS = 1000
-	queryMaxPS     = 10000
+	queryMaxPS     = 1000
+	// QueryMaxBytes is the default cap of the JSON size of one query response page.
+	QueryMaxBytes = 8 << 20
 )
+
+var queryMaxBytes = QueryMaxBytes
+
+// setStatementTimeout applies a server-side statement timeout to the connection: MySQL uses
+// MAX_EXECUTION_TIME (milliseconds), MariaDB max_statement_time (seconds). Each variable is unknown
+// on the other server; if neither could be set the query must not run. The returned func resets
+// the variable that was set.
+func setStatementTimeout(ctx context.Context, conn *sql.Conn) (func(), error) {
+	var undo []string
+	if _, err := conn.ExecContext(ctx, "SET SESSION MAX_EXECUTION_TIME = "+strconv.Itoa(queryStmtMS)); err == nil {
+		undo = append(undo, "SET SESSION MAX_EXECUTION_TIME = 0")
+	}
+	if _, err := conn.ExecContext(ctx, "SET SESSION max_statement_time = "+strconv.Itoa(queryStmtMS/1000)); err == nil {
+		undo = append(undo, "SET SESSION max_statement_time = 0")
+	}
+	if len(undo) == 0 {
+		return nil, core.NewError(core.StatusFailedPrecondition, "QUERY_TIMEOUT_UNSUPPORTED", "the database does not support a statement timeout; refusing to run the query")
+	}
+	return func() {
+		c2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for _, u := range undo {
+			_, _ = conn.ExecContext(c2, u)
+		}
+	}, nil
+}
+
+// queryDB is the handle used for user SQL: the dedicated read-only pool when configured.
+func (s *Store) queryDB() *sql.DB {
+	if s.QueryDB != nil {
+		return s.QueryDB
+	}
+	return s.DB
+}
 
 // Query runs a guarded read-only SELECT over the public views, restricted to the project.
 // page_token is an opaque row offset: add ORDER BY for stable pagination.
@@ -47,20 +84,16 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
-	conn, err := s.DB.Conn(ctx)
+	conn, err := s.queryDB().Conn(ctx)
 	if err != nil {
 		return nil, internalErr(err)
 	}
 	defer conn.Close()
-	// best-effort server-side limits: MariaDB (seconds) and MySQL (milliseconds); each fails on the other server
-	_, _ = conn.ExecContext(ctx, "SET SESSION max_statement_time = 10")
-	_, _ = conn.ExecContext(ctx, "SET SESSION max_execution_time = 10000")
-	defer func() {
-		c2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel2()
-		_, _ = conn.ExecContext(c2, "SET SESSION max_statement_time = 0")
-		_, _ = conn.ExecContext(c2, "SET SESSION max_execution_time = 0")
-	}()
+	reset, err := setStatementTimeout(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	defer reset()
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, internalErr(err)
@@ -86,7 +119,7 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 	}
 	resp.Columns = &cols
 	out := [][]*api.AnyValue{}
-	n := 0
+	n, total := 0, 0
 	more := false
 	for rows.Next() {
 		if n < offset {
@@ -108,6 +141,12 @@ func (s *Store) Query(ctx context.Context, p Project, sqlText string, pageSize i
 		for i := range dest {
 			v := convertValue(*(dest[i].(*any)), cts[i])
 			row[i] = &v
+		}
+		if rb, err := json.Marshal(row); err == nil {
+			total += len(rb)
+		}
+		if total > queryMaxBytes {
+			return nil, core.NewError(core.StatusInvalidArgument, "RESULT_TOO_LARGE", "the result exceeds %d bytes; select fewer columns or use a smaller page_size", queryMaxBytes)
 		}
 		out = append(out, row)
 		n++

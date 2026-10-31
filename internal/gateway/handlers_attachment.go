@@ -1,13 +1,16 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/life-is-blue/openetl-cli/internal/api"
@@ -19,7 +22,69 @@ import (
 const (
 	uploadTTL   = 15 * time.Minute
 	downloadTTL = 5 * time.Minute
+	// stagingMaxAge is how long an unregistered upload may live before the cleanup deletes it.
+	stagingMaxAge = time.Hour
 )
+
+// Per-project caps on pending (issued but not yet registered) uploads.
+var (
+	MaxPendingUploads     = 50
+	MaxPendingUploadBytes = int64(1 << 30)
+	envPublicURL          = "OPENETL_PUBLIC_URL"
+	envTrustProxy         = "OPENETL_TRUST_PROXY"
+)
+
+type reservation struct {
+	size    int64
+	expires time.Time
+}
+
+// uploadQuota tracks upload URLs issued by this process (an issued URL may be used up to its expiry,
+// before any object exists) so the pending cap also covers uploads that have not started yet.
+type uploadQuota struct {
+	mu   sync.Mutex
+	proj map[int64]map[string]reservation
+}
+
+// reserve registers key unless the project is at its cap; staged are the objects already in staging.
+func (u *uploadQuota) reserve(project int64, key string, size int64, staged []storage.StagedObject, now time.Time) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.proj == nil {
+		u.proj = map[int64]map[string]reservation{}
+	}
+	m := u.proj[project]
+	if m == nil {
+		m = map[string]reservation{}
+		u.proj[project] = m
+	}
+	pending := map[string]int64{}
+	for k, r := range m {
+		if now.After(r.expires) {
+			delete(m, k)
+			continue
+		}
+		pending[k] = r.size
+	}
+	for _, o := range staged {
+		pending[o.Key] = o.Size
+	}
+	var bytes int64
+	for _, n := range pending {
+		bytes += n
+	}
+	if len(pending) >= MaxPendingUploads || bytes+size > MaxPendingUploadBytes {
+		return false
+	}
+	m[key] = reservation{size: size, expires: now.Add(uploadTTL)}
+	return true
+}
+
+func (u *uploadQuota) release(project int64, key string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.proj[project], key)
+}
 
 var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -52,19 +117,51 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
-// absURL turns the fs backend's path-only URLs into absolute ones using the request's host.
+// absURL turns the fs backend's path-only URLs into absolute ones. OPENETL_PUBLIC_URL, when set,
+// is the base; otherwise the request's own scheme and host are used, and X-Forwarded-Proto/Host
+// are honoured only behind a trusted proxy (OPENETL_TRUST_PROXY=1).
 func absURL(r *http.Request, u string) string {
 	if !strings.HasPrefix(u, "/") {
 		return u
 	}
-	scheme := "http"
+	if base := strings.TrimRight(os.Getenv(envPublicURL), "/"); base != "" {
+		return base + u
+	}
+	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
-		scheme = p
+	if os.Getenv(envTrustProxy) == "1" {
+		if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
+			scheme = p
+		}
+		if h := r.Header.Get("X-Forwarded-Host"); h != "" && !strings.ContainsAny(h, "/\\@ ,") {
+			host = h
+		}
 	}
-	return scheme + "://" + r.Host + u
+	return scheme + "://" + host + u
+}
+
+// CleanupStaging deletes staging uploads older than stagingMaxAge and returns how many it removed.
+func (s *Server) CleanupStaging(ctx context.Context) (int, error) {
+	st, err := s.blobs()
+	if err != nil {
+		return 0, err
+	}
+	list, err := st.ListStaging(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, o := range list {
+		if time.Since(o.ModTime) < stagingMaxAge {
+			continue
+		}
+		if err := st.Delete(ctx, o.Key); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *Server) routeAttachments(q *request, wf int64) error {
@@ -169,8 +266,20 @@ func (s *Server) initUpload(q *request, wf int64) error {
 		return err
 	}
 	key := q.pr.project().StorageKeyPrefix(wf) + hex.EncodeToString(rnd[:])
-	ps, err := st.PresignPut(q.r.Context(), key, storage.PutOptions{Size: body.Size, SHA256: sha}, uploadTTL)
+	stg := storage.StagingKey(key)
+	pid := q.pr.project().ID
+	staged, err := st.ListStaging(q.r.Context(), strconv.FormatInt(pid, 10)+"/")
 	if err != nil {
+		return err
+	}
+	if !s.quota.reserve(pid, stg, body.Size, staged, time.Now()) {
+		return core.NewError(core.StatusResourceExhausted, "TOO_MANY_PENDING_UPLOADS",
+			"too many pending uploads for this project (limit %d uploads / %d bytes); register or wait for them to expire", MaxPendingUploads, MaxPendingUploadBytes)
+	}
+	// the client PUTs to the staging key; registration commits the verified bytes to `key`
+	ps, err := st.PresignPut(q.r.Context(), stg, storage.PutOptions{Size: body.Size, SHA256: sha}, uploadTTL)
+	if err != nil {
+		s.quota.release(pid, stg)
 		return err
 	}
 	resp := api.InitUploadResponse{StorageKey: &key, UploadUrl: ptrOf(absURL(q.r, ps.URL)), ExpireTime: &ps.Expires}
@@ -212,24 +321,36 @@ func (s *Server) createAttachment(q *request, wf int64) error {
 	if err != nil {
 		return err
 	}
-	obj, err := st.Stat(q.r.Context(), body.StorageKey)
-	if errors.Is(err, storage.ErrNotFound) {
-		return core.NewError(core.StatusFailedPrecondition, "UPLOAD_NOT_FOUND", "no object found for storage_key; upload the bytes to the URL from initUpload first")
-	}
+	stg := storage.StagingKey(body.StorageKey)
+	// storage_key is unique per project; only a replay with the same request_id may reuse it
+	registered, byThis, err := s.Store.StorageKeyRegisteredBy(q.r.Context(), p, body.StorageKey, o.RequestID)
 	if err != nil {
 		return err
 	}
-	if obj.Size != body.Size {
-		return core.NewError(core.StatusFailedPrecondition, "SIZE_MISMATCH", "uploaded object has %d bytes, request says %d", obj.Size, body.Size)
+	if registered && !byThis {
+		return core.NewError(core.StatusAlreadyExists, "STORAGE_KEY_REGISTERED", "storage_key is already registered as an attachment")
 	}
-	if obj.SHA256 != "" && obj.SHA256 != sha {
-		return core.NewError(core.StatusFailedPrecondition, "SHA256_MISMATCH", "uploaded object does not match the supplied sha256")
-	}
-	if o.RequestID == "" { // a retried registration with a request_id replays instead
-		if used, err := s.Store.StorageKeyRegistered(q.r.Context(), p, body.StorageKey); err != nil {
-			return err
-		} else if used {
+	committed := false
+	if !registered {
+		// the server hashes the staged bytes itself; the client's sha256 is only compared
+		verr := error(nil)
+		if o.ValidateOnly {
+			verr = st.Verify(q.r.Context(), stg, body.Size, sha)
+		} else {
+			verr = st.Commit(q.r.Context(), stg, body.StorageKey, body.Size, sha)
+			committed = verr == nil
+		}
+		switch {
+		case errors.Is(verr, storage.ErrNotFound):
+			return core.NewError(core.StatusFailedPrecondition, "UPLOAD_NOT_FOUND", "no object found for storage_key; upload the bytes to the URL from initUpload first")
+		case errors.Is(verr, storage.ErrSizeMismatch):
+			return core.NewError(core.StatusFailedPrecondition, "SIZE_MISMATCH", "uploaded object does not have the size in the request (%d bytes)", body.Size)
+		case errors.Is(verr, storage.ErrHashMismatch):
+			return core.NewError(core.StatusFailedPrecondition, "SHA256_MISMATCH", "uploaded object does not match the supplied sha256")
+		case errors.Is(verr, storage.ErrExists):
 			return core.NewError(core.StatusAlreadyExists, "STORAGE_KEY_REGISTERED", "storage_key is already registered as an attachment")
+		case verr != nil:
+			return verr
 		}
 	}
 	plan := func(*store.Entity, core.Env) ([]store.PlannedChange, error) {
@@ -243,8 +364,12 @@ func (s *Server) createAttachment(q *request, wf int64) error {
 	}
 	res, err := s.apply(q, "attachment", 0, o, plan, timeZero)
 	if err != nil {
+		if committed { // not registered: do not leave an orphan blob behind
+			_ = st.Delete(context.WithoutCancel(q.r.Context()), body.StorageKey)
+		}
 		return err
 	}
+	s.quota.release(p.ID, stg)
 	return s.respond(q, s.Store.PreviewAttachment(p, wf, res.After))
 }
 

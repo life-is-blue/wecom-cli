@@ -339,6 +339,7 @@ func TestImportRollback(t *testing.T) {
 	if e.liveWorkflows(t) != 3 || e.ent(t, pre).str("name") != "Existing renamed" {
 		t.Fatal("apply did not take effect")
 	}
+	e.verifyLatest(t)
 	evBefore := e.countEvents(t)
 	rb, err := e.st.RollbackImport(e.ctx, e.p, e.actor("delivery", "admin"), id, ImportApplyOpts{})
 	if err != nil {
@@ -347,6 +348,7 @@ func TestImportRollback(t *testing.T) {
 	if *rb.State != "ROLLED_BACK" {
 		t.Fatal(*rb.State)
 	}
+	e.verifyLatest(t)
 	if e.liveWorkflows(t) != 1 {
 		t.Fatalf("live workflows after rollback: %d", e.liveWorkflows(t))
 	}

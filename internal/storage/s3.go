@@ -2,8 +2,12 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,6 +86,9 @@ func (s *S3) PresignGet(ctx context.Context, key, filename string, ttl time.Dura
 	if err != nil {
 		return nil, err
 	}
+	if IsStaging(key) {
+		return nil, errors.New("staging objects cannot be downloaded")
+	}
 	cd := `attachment; filename="` + SanitizeFilename(filename) + `"`
 	req, err := s.ps.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &k, ResponseContentDisposition: &cd},
 		func(po *s3.PresignOptions) { po.Expires = ttl })
@@ -110,6 +117,143 @@ func (s *S3) Stat(ctx context.Context, key string) (*Object, error) {
 	}
 	o.SHA256 = out.Metadata["sha256"]
 	return o, nil
+}
+
+// headETag returns the object's size and ETag.
+func (s *S3) headETag(ctx context.Context, k string) (int64, string, error) {
+	out, err := s.cli.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &k})
+	if err != nil {
+		if isS3NotFound(err) {
+			return 0, "", ErrNotFound
+		}
+		return 0, "", err
+	}
+	var size int64
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	etag := ""
+	if out.ETag != nil {
+		etag = *out.ETag
+	}
+	return size, etag, nil
+}
+
+// verifyETag hashes the object version identified by etag (reads are pinned with If-Match, so a
+// concurrent overwrite makes the read fail instead of hashing different bytes).
+func (s *S3) verifyETag(ctx context.Context, k, etag string, size int64, sha string) error {
+	in := &s3.GetObjectInput{Bucket: &s.bucket, Key: &k}
+	if etag != "" {
+		in.IfMatch = &etag
+	}
+	out, err := s.cli.GetObject(ctx, in)
+	if err != nil {
+		if isS3NotFound(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	defer out.Body.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(out.Body, MaxObjectSize+1))
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return ErrSizeMismatch
+	}
+	if hex.EncodeToString(h.Sum(nil)) != sha {
+		return ErrHashMismatch
+	}
+	return nil
+}
+
+// Verify implements Storage; the digest is computed here from the stored bytes.
+func (s *S3) Verify(ctx context.Context, stagingKey string, size int64, sha string) error {
+	k, err := s.objKey(stagingKey)
+	if err != nil {
+		return err
+	}
+	n, etag, err := s.headETag(ctx, k)
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return ErrSizeMismatch
+	}
+	return s.verifyETag(ctx, k, etag, size, sha)
+}
+
+// Commit implements Storage: verify the pinned version, copy exactly that version (CopySourceIfMatch)
+// to the final key, then delete the staging object.
+func (s *S3) Commit(ctx context.Context, stagingKey, finalKey string, size int64, sha string) error {
+	sk, err := s.objKey(stagingKey)
+	if err != nil {
+		return err
+	}
+	fk, err := s.objKey(finalKey)
+	if err != nil {
+		return err
+	}
+	if _, _, err := s.headETag(ctx, fk); err == nil {
+		return ErrExists
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	n, etag, err := s.headETag(ctx, sk)
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return ErrSizeMismatch
+	}
+	if err := s.verifyETag(ctx, sk, etag, size, sha); err != nil {
+		return err
+	}
+	in := &s3.CopyObjectInput{Bucket: &s.bucket, Key: &fk, CopySource: aws.String(s.bucket + "/" + (&url.URL{Path: sk}).EscapedPath()),
+		MetadataDirective: types.MetadataDirectiveCopy}
+	if etag != "" {
+		in.CopySourceIfMatch = &etag
+	}
+	if _, err := s.cli.CopyObject(ctx, in); err != nil {
+		return err
+	}
+	_, err = s.cli.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &sk})
+	return err
+}
+
+// ListStaging implements Storage.
+func (s *S3) ListStaging(ctx context.Context, prefix string) ([]StagedObject, error) {
+	base := ""
+	if s.prefix != "" {
+		base = s.prefix + "/"
+	}
+	p := base + StagingPrefix + prefix
+	var out []StagedObject
+	var tok *string
+	for {
+		r, err := s.cli.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &p, ContinuationToken: tok})
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range r.Contents {
+			if o.Key == nil {
+				continue
+			}
+			so := StagedObject{Key: strings.TrimPrefix(*o.Key, base)}
+			if o.Size != nil {
+				so.Size = *o.Size
+			}
+			if o.LastModified != nil {
+				so.ModTime = *o.LastModified
+			}
+			out = append(out, so)
+		}
+		if r.IsTruncated == nil || !*r.IsTruncated || r.NextContinuationToken == nil {
+			return out, nil
+		}
+		tok = r.NextContinuationToken
+	}
 }
 
 // Delete implements Storage.

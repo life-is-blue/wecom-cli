@@ -118,9 +118,23 @@ func lockAdmins(ctx context.Context, tx *sql.Tx, projectID int64) (map[string]bo
 	return m, rows.Err()
 }
 
+// accountScopeOK reports whether caller may take over account: every membership of account lies in a
+// project caller administers, except for projects in `except` (typically the project being edited).
+// An account without memberships is trivially in scope.
+func accountScopeOK(ctx context.Context, q execer, caller, account string, except int64) (bool, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM member t
+		WHERE t.user_name = ? AND t.project_id <> ? AND NOT EXISTS (
+			SELECT 1 FROM member a WHERE a.project_id = t.project_id AND a.user_name = ? AND a.role = 'admin')`,
+		account, except, caller).Scan(&n)
+	return n == 0, err
+}
+
 // SetMember adds a member or changes role/side. Unknown accounts are created as human accounts.
-// Agent accounts cannot be admin; the last admin cannot be demoted.
-func (s *Store) SetMember(ctx context.Context, p Project, account, role, side string) (*api.Member, error) {
+// Agent accounts cannot be admin; the last admin cannot be demoted. An EXISTING account that also
+// belongs to projects the caller does not administer can only be edited when it is already a member
+// of p: an admin of one project cannot link a foreign account (and so reach its account-wide tokens).
+func (s *Store) SetMember(ctx context.Context, p Project, caller, account, role, side string) (*api.Member, error) {
 	if !ValidAccountID(account) {
 		return nil, invalidArg("INVALID_ACCOUNT", "account %q is not a valid account name", account)
 	}
@@ -132,6 +146,19 @@ func (s *Store) SetMember(ctx context.Context, p Project, account, role, side st
 	now := s.now()
 	if _, err := tx.ExecContext(ctx, `INSERT IGNORE INTO account(user_name, kind, created_at) VALUES(?, 'human', ?)`, account, now); err != nil {
 		return nil, internalErr(err)
+	}
+	var already int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM member WHERE project_id = ? AND user_name = ? FOR UPDATE`, p.ID, account).Scan(&already); err != nil {
+		return nil, internalErr(err)
+	}
+	if already == 0 {
+		ok, err := accountScopeOK(ctx, tx, caller, account, p.ID)
+		if err != nil {
+			return nil, internalErr(err)
+		}
+		if !ok {
+			return nil, core.NewError(core.StatusPermissionDenied, "ACCOUNT_IN_OTHER_PROJECT", "account %q belongs to projects you do not administer and cannot be added here", account)
+		}
 	}
 	var kind string
 	if err := tx.QueryRowContext(ctx, `SELECT kind FROM account WHERE user_name = ?`, account).Scan(&kind); err != nil {
@@ -188,12 +215,23 @@ func (s *Store) RemoveMember(ctx context.Context, p Project, account string) err
 
 // ---------------------------------------------------------------- tokens
 
-// CanManageTokens reports whether caller is an admin of a project the target account belongs to.
+// CanManageTokens reports whether caller may create, list or revoke the tokens of target. Tokens are
+// account-wide, so the caller must administer EVERY project the target belongs to (the target must
+// belong to at least one). A caller managing its own account needs the admin role somewhere.
 func (s *Store) CanManageTokens(ctx context.Context, caller, target string) (bool, error) {
 	var n int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM member a JOIN member t ON t.project_id = a.project_id
-		WHERE a.user_name = ? AND a.role = 'admin' AND t.user_name = ?`, caller, target).Scan(&n)
-	return n > 0, internalErr(err)
+	if caller == target {
+		err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM member WHERE user_name = ? AND role = 'admin'`, caller).Scan(&n)
+		return n > 0, internalErr(err)
+	}
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM member WHERE user_name = ?`, target).Scan(&n); err != nil {
+		return false, internalErr(err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	ok, err := accountScopeOK(ctx, s.DB, caller, target, 0)
+	return ok, internalErr(err)
 }
 
 func tokenName(account string, id int64) string {
@@ -248,6 +286,13 @@ func (s *Store) ListTokens(ctx context.Context, account string, pageSize int, to
 		last = id
 	}
 	return out, next, internalErr(rows.Err())
+}
+
+// ProjectCount returns the number of projects of the instance.
+func (s *Store) ProjectCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM project`).Scan(&n)
+	return n, internalErr(err)
 }
 
 // AccountExists reports whether the account exists.

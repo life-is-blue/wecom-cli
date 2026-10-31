@@ -13,7 +13,7 @@ import (
 
 // eventScope restricts events to a workflow and the comments/attachments attached to it.
 const eventScope = `ev.project_id = ? AND (ev.entity_id = ? OR ev.entity_id IN
-	(SELECT d.entity_id FROM delta d WHERE d.k = 'on' AND JSON_UNQUOTE(d.new_v) = ?))`
+	(SELECT l.entity_id FROM entity_latest l WHERE l.k = 'on' AND JSON_UNQUOTE(l.v) = ?))`
 
 // ListEvents lists audit events of a workflow. o.AsOf bounds by recording time (create_time).
 func (s *Store) ListEvents(ctx context.Context, p Project, wf int64, o ListOpts) ([]api.Event, string, error) {

@@ -33,6 +33,7 @@ type Server struct {
 	Storage  storage.Storage
 	storOnce sync.Once
 	storErr  error
+	quota    uploadQuota
 }
 
 // New creates the gateway handler.

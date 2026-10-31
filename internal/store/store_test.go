@@ -541,8 +541,6 @@ func TestQueryGuard(t *testing.T) {
 		"SELECT stage, health, workflows FROM stage_distribution",
 		"SELECT w.id, t.id FROM workflows w JOIN tasks t ON t.primary_workflow_id = w.id WHERE w.name LIKE 'a;b%' ORDER BY 1 LIMIT 5;",
 		"select count(*) from workflows where health = 'blocked'",
-		"SELECT * FROM `workflows` UNION SELECT * FROM `workflows`",
-		"SELECT x.n FROM (SELECT COUNT(*) AS n FROM comments) x",
 	}
 	for _, q := range good {
 		out, err := GuardQuery(q, 7)

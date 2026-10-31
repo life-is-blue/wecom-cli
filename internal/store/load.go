@@ -71,14 +71,22 @@ func loadEntities(ctx context.Context, q execer, projectID int64, typ string, id
 		asOfCond = " AND ev.create_time <= ?"
 		asOfArgs = []any{asOf}
 	}
-	// latest delta per (entity,key)
-	q1 := `SELECT d.entity_id, d.k, d.new_v, d.event_id, ev.event_time, ev.create_time
-		FROM delta d JOIN event ev ON ev.id = d.event_id
-		WHERE d.entity_id IN (` + ph + `)` + asOfCond + `
-		AND d.event_id = (SELECT MAX(d2.event_id) FROM delta d2 JOIN event ev2 ON ev2.id = d2.event_id
-			WHERE d2.entity_id = d.entity_id AND d2.k = d.k` + strings.ReplaceAll(asOfCond, "ev.", "ev2.") + `)`
-	args = append(idArgs(ids), asOfArgs...)
-	args = append(args, asOfArgs...)
+	// latest value per (entity,key): the entity_latest cache, or, for time travel, delta itself
+	var q1 string
+	if asOf.IsZero() {
+		q1 = `SELECT l.entity_id, l.k, l.v, l.event_id, ev.event_time, ev.create_time
+			FROM entity_latest l JOIN event ev ON ev.id = l.event_id
+			WHERE l.entity_id IN (` + ph + `)`
+		args = idArgs(ids)
+	} else {
+		q1 = `SELECT d.entity_id, d.k, d.new_v, d.event_id, ev.event_time, ev.create_time
+			FROM delta d JOIN event ev ON ev.id = d.event_id
+			WHERE d.entity_id IN (` + ph + `)` + asOfCond + `
+			AND d.event_id = (SELECT MAX(d2.event_id) FROM delta d2 JOIN event ev2 ON ev2.id = d2.event_id
+				WHERE d2.entity_id = d.entity_id AND d2.k = d.k` + strings.ReplaceAll(asOfCond, "ev.", "ev2.") + `)`
+		args = append(idArgs(ids), asOfArgs...)
+		args = append(args, asOfArgs...)
+	}
 	rows, err = q.QueryContext(ctx, q1, args...)
 	if err != nil {
 		return nil, err

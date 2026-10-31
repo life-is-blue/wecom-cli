@@ -31,6 +31,27 @@ OPENETL_TEST_DSN=$OPENETL_DB_DSN go test ./...   # DB tests skip when the DSN is
 `openetl-gateway admin create-token` mints the first token (shown once, only its hash is stored);
 `openetl auth login --token-stdin` stores it encrypted on the client, or set `OPENETL_TOKEN`.
 
+`delta` is the append-only source of truth; `entity_latest` (migration 0004) is a derived cache of the newest value per
+(entity, key) that the public views read. It is written in the same transaction as the deltas and can be checked or rebuilt:
+`openetl-gateway admin verify-latest` (exit 1 on any mismatch) and `openetl-gateway admin rebuild-latest`.
+Numbers and the seeding/measuring scripts: `docs/performance.md`.
+
+## Security notes
+
+The query endpoint (`openetl query`) accepts one `SELECT` over the seven public views only (no subqueries, `UNION`,
+CTEs, comma joins or parentheses after `FROM`/`JOIN`); every view reference is rewritten with the project filter.
+As a second layer, run it over a database user that can only `SELECT` those views:
+
+```bash
+# edit the database name and password first
+mysql -u root -p < scripts/create-query-user.sql
+export OPENETL_QUERY_DSN='openetl_query:PASSWORD@tcp(db-host:3306)/openetl'   # gateway env; without it the main DSN is used (startup warning)
+```
+
+Other switches: `OPENETL_PUBLIC_URL` (base of signed blob URLs), `OPENETL_TRUST_PROXY=1` (honour `X-Forwarded-*`),
+`OPENETL_ALLOW_GLOBAL_CONFIG=1` (config updates on multi-project instances), client `OPENETL_ALLOW_HTTP=1`
+(plain http to non-loopback hosts). Details and known limits: `docs/security.md`.
+
 ## Status
 
 M0 (contract) done. M1 (gateway, CLI, first Skills) done and covered by `scripts/demo.sh`;

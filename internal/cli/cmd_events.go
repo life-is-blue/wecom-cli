@@ -135,10 +135,14 @@ func (a *App) fetchTo(target, dst string) (int64, string, error) {
 		return 0, "", runtimef("bad download_url: %v", err)
 	}
 	base, _ := url.Parse(r.base)
-	sameHost := !u.IsAbs() || (base != nil && u.Host == base.Host)
 	if !u.IsAbs() && base != nil {
 		u = base.ResolveReference(u)
 	}
+	if err := a.checkTransport(u); err != nil {
+		return 0, "", err
+	}
+	// the API token goes only to the gateway's own origin (scheme, host and port all equal)
+	sameHost := sameOrigin(u, base)
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return 0, "", runtimef("download: %v", err)
@@ -147,7 +151,7 @@ func (a *App) fetchTo(target, dst string) (int64, string, error) {
 	if sameHost && r.token != "" {
 		req.Header.Set("Authorization", "Bearer "+r.token)
 	}
-	resp, err := a.HTTP.Do(req)
+	resp, err := a.httpFor(r.base).Do(req)
 	if err != nil {
 		return 0, "", runtimef("download failed: %v", scrub(err, r.token))
 	}

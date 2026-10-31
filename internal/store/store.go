@@ -21,8 +21,10 @@ import (
 
 // Store wraps the database handle.
 type Store struct {
-	DB  *sql.DB
-	Now func() time.Time // injectable clock; defaults to time.Now().UTC()
+	DB *sql.DB
+	// QueryDB, when set, is the (ideally SELECT-only on the public views) pool used for user SQL.
+	QueryDB *sql.DB
+	Now     func() time.Time // injectable clock; defaults to time.Now().UTC()
 }
 
 // Open connects to MySQL. The DSN is a go-sql-driver DSN; parseTime and UTC are forced.
@@ -50,8 +52,23 @@ func Open(dsn string) (*Store, error) {
 	return &Store{DB: d}, nil
 }
 
-// Close closes the pool.
-func (s *Store) Close() error { return s.DB.Close() }
+// OpenQuery opens the separate pool used for user queries (OPENETL_QUERY_DSN) and attaches it.
+func (s *Store) OpenQuery(dsn string) error {
+	q, err := Open(dsn)
+	if err != nil {
+		return err
+	}
+	s.QueryDB = q.DB
+	return nil
+}
+
+// Close closes the pools.
+func (s *Store) Close() error {
+	if s.QueryDB != nil {
+		s.QueryDB.Close()
+	}
+	return s.DB.Close()
+}
 
 func (s *Store) now() time.Time {
 	if s.Now != nil {

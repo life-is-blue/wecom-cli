@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -90,9 +91,76 @@ func (a *App) call(method, path string, q url.Values, body any) ([]byte, error) 
 	return a.callWith(r.base, r.token, method, path, q, body)
 }
 
+// EnvAllowHTTP=1 permits plain http to non-loopback hosts (bearer tokens would travel in clear text).
+const EnvAllowHTTP = "OPENETL_ALLOW_HTTP"
+
+func isLoopbackHost(h string) bool {
+	h = strings.ToLower(strings.Trim(h, "[]"))
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkTransport requires https for every non-loopback URL the CLI talks to, unless OPENETL_ALLOW_HTTP=1.
+func (a *App) checkTransport(u *url.URL) error {
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) || a.Getenv(EnvAllowHTTP) == "1" {
+			return nil
+		}
+		return usagef("refusing to use plain http for %s: use an https URL (or set %s=1 to accept the risk)", u.Host, EnvAllowHTTP)
+	}
+	return usagef("unsupported URL scheme %q", u.Scheme)
+}
+
+func effPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// sameOrigin reports whether scheme, host and port of u and base are all equal.
+func sameOrigin(u, base *url.URL) bool {
+	return base != nil && u.Scheme == base.Scheme && strings.EqualFold(u.Hostname(), base.Hostname()) && effPort(u) == effPort(base)
+}
+
+// httpFor returns the client to use for requests that carry the token: redirects to another origin
+// (scheme, host or port) drop the Authorization header.
+func (a *App) httpFor(base string) *http.Client {
+	bu, _ := url.Parse(base)
+	c := *a.HTTP
+	prev := a.HTTP.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !sameOrigin(req.URL, bu) {
+			req.Header.Del("Authorization")
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &c
+}
+
 func (a *App) callWith(base, token, method, path string, q url.Values, body any) ([]byte, error) {
 	if base == "" {
 		return nil, usagef("base URL required: pass --base-url, set %s, or run `openetl auth login`", EnvBaseURL)
+	}
+	if bu, err := url.Parse(base); err != nil || bu.Host == "" {
+		return nil, usagef("invalid base URL %q", base)
+	} else if err := a.checkTransport(bu); err != nil {
+		return nil, err
 	}
 	if token == "" {
 		return nil, &cliError{Exit: 1, Code: 401, Status: "UNAUTHENTICATED",
@@ -120,7 +188,7 @@ func (a *App) callWith(base, token, method, path string, q url.Values, body any)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := a.HTTP.Do(req)
+	resp, err := a.httpFor(base).Do(req)
 	if err != nil {
 		return nil, runtimef("request failed: %v", scrub(err, token))
 	}

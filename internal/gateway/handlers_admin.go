@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -103,7 +104,7 @@ func (s *Server) setMember(q *request, account string) error {
 	default:
 		return invalid("INVALID_SIDE", "side must be DELIVERY or CUSTOMER")
 	}
-	m, err := s.Store.SetMember(q.r.Context(), q.pr.project(), account, role, side)
+	m, err := s.Store.SetMember(q.r.Context(), q.pr.project(), q.pr.Account.UserName, account, role, side)
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,24 @@ func (s *Server) removeMember(q *request, account string) error {
 	return nil
 }
 
+// EnvAllowGlobalConfig lets config updates through on instances with several projects. Stages,
+// reasons, rules and settings are global (not per project), so any admin edit affects every project.
+const EnvAllowGlobalConfig = "OPENETL_ALLOW_GLOBAL_CONFIG"
+
 func (s *Server) updateConfig(q *request) error {
+	if q.pr.Member.Role != core.RoleAdmin {
+		return core.NewError(core.StatusPermissionDenied, "ROLE_INSUFFICIENT", "this call requires the admin role")
+	}
+	if os.Getenv(EnvAllowGlobalConfig) != "1" {
+		n, err := s.Store.ProjectCount(q.r.Context())
+		if err != nil {
+			return err
+		}
+		if n > 1 {
+			return core.NewError(core.StatusPermissionDenied, "GLOBAL_CONFIG_SHARED",
+				"the configuration is shared by all %d projects of this instance; updating it is disabled (set %s=1 on the gateway to allow it)", n, EnvAllowGlobalConfig)
+		}
+	}
 	mask, err := parseMask(q.query("update_mask"), []string{"stages", "reasons", "rules", "settings"})
 	if err != nil {
 		return err
@@ -164,7 +182,7 @@ func (s *Server) routeAccounts(q *request) error {
 		return err
 	}
 	if !ok {
-		return core.NewError(core.StatusPermissionDenied, "ROLE_INSUFFICIENT", "token management requires the admin role in a project the account belongs to")
+		return core.NewError(core.StatusPermissionDenied, "ROLE_INSUFFICIENT", "token management requires the admin role in every project the account belongs to")
 	}
 	switch n {
 	case 3:

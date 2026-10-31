@@ -88,8 +88,8 @@ func notFoundAs(err error, what string) error {
 // StorageKeyRegistered reports whether an attachment of the project already uses the storage key.
 func (s *Store) StorageKeyRegistered(ctx context.Context, p Project, key string) (bool, error) {
 	var n int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM delta d JOIN entity e ON e.id = d.entity_id
-		WHERE e.project_id = ? AND e.type = 'attachment' AND d.k = 'storage_key' AND JSON_UNQUOTE(d.new_v) = ?`, p.ID, key).Scan(&n)
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM entity_latest l JOIN entity e ON e.id = l.entity_id
+		WHERE l.k = 'storage_key' AND e.project_id = ? AND e.type = 'attachment' AND JSON_UNQUOTE(l.v) = ?`, p.ID, key).Scan(&n)
 	return n > 0, internalErr(err)
 }
 
@@ -122,4 +122,42 @@ func (s *Store) ResolveEvidence(ctx context.Context, p Project, wf int64, refs [
 		names = append(names, p.attachmentName(wf, id))
 	}
 	return names, nil
+}
+
+// StorageKeyRegisteredBy reports whether an attachment of the project uses the storage key and, when
+// requestID is non-empty, whether that attachment was created by a request with this idempotency key
+// (a replay). Without a request_id the second result is always false.
+func (s *Store) StorageKeyRegisteredBy(ctx context.Context, p Project, key, requestID string) (registered, byRequest bool, err error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT e.id FROM entity_latest l JOIN entity e ON e.id = l.entity_id
+		WHERE l.k = 'storage_key' AND e.project_id = ? AND e.type = 'attachment' AND JSON_UNQUOTE(l.v) = ?`, p.ID, key)
+	if err != nil {
+		return false, false, internalErr(err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, false, internalErr(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return false, false, internalErr(err)
+	}
+	if requestID == "" {
+		return true, false, nil
+	}
+	for _, id := range ids {
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM event WHERE project_id = ? AND entity_id = ? AND idempotency_key = ?`,
+			p.ID, id, requestID).Scan(&n); err != nil {
+			return true, false, internalErr(err)
+		}
+		if n > 0 {
+			return true, true, nil
+		}
+	}
+	return true, false, nil
 }

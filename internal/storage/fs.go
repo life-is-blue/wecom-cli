@@ -100,6 +100,9 @@ func (f *FS) PresignGet(_ context.Context, key, filename string, ttl time.Durati
 	if _, err := f.path(key); err != nil {
 		return nil, err
 	}
+	if IsStaging(key) {
+		return nil, errors.New("staging objects cannot be downloaded")
+	}
 	fn := SanitizeFilename(filename)
 	exp := f.now().Add(ttl).Unix()
 	q := url.Values{"exp": {strconv.FormatInt(exp, 10)}, "fn": {fn}}
@@ -107,12 +110,16 @@ func (f *FS) PresignGet(_ context.Context, key, filename string, ttl time.Durati
 	return &Presigned{URL: f.urlFor(key, q), Expires: time.Unix(exp, 0).UTC()}, nil
 }
 
-// Stat implements Storage; it hashes the file so registration can verify sha256.
+// Stat implements Storage; it hashes the file (the digest is computed by the server).
 func (f *FS) Stat(_ context.Context, key string) (*Object, error) {
 	p, err := f.path(key)
 	if err != nil {
 		return nil, err
 	}
+	return statHash(p)
+}
+
+func statHash(p string) (*Object, error) {
 	fh, err := os.Open(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
@@ -130,6 +137,106 @@ func (f *FS) Stat(_ context.Context, key string) (*Object, error) {
 		return nil, err
 	}
 	return &Object{Size: st.Size(), SHA256: hex.EncodeToString(h.Sum(nil))}, nil
+}
+
+func checkObject(o *Object, size int64, sha string) error {
+	if o.Size != size {
+		return ErrSizeMismatch
+	}
+	if o.SHA256 != sha {
+		return ErrHashMismatch
+	}
+	return nil
+}
+
+// Verify implements Storage.
+func (f *FS) Verify(_ context.Context, stagingKey string, size int64, sha string) error {
+	p, err := f.path(stagingKey)
+	if err != nil {
+		return err
+	}
+	o, err := statHash(p)
+	if err != nil {
+		return err
+	}
+	return checkObject(o, size, sha)
+}
+
+// Commit implements Storage: the staged file is first renamed to a private name (so a concurrent
+// upload to the staging key creates a new file instead of changing the one being verified), then
+// verified and hard-linked to the final key (link fails if it exists: committed blobs are immutable).
+func (f *FS) Commit(_ context.Context, stagingKey, finalKey string, size int64, sha string) error {
+	sp, err := f.path(stagingKey)
+	if err != nil {
+		return err
+	}
+	fp, err := f.path(finalKey)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(fp), 0o750); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(fp), ".commit-*")
+	if err != nil {
+		return err
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+	if err := os.Rename(sp, tmp.Name()); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	o, err := statHash(tmp.Name())
+	if err == nil {
+		err = checkObject(o, size, sha)
+	}
+	if err != nil {
+		_ = os.Link(tmp.Name(), sp) // give the client its upload back (best effort; no overwrite)
+		return err
+	}
+	if err := os.Link(tmp.Name(), fp); err != nil {
+		_ = os.Link(tmp.Name(), sp)
+		if errors.Is(err, os.ErrExist) {
+			return ErrExists
+		}
+		return err
+	}
+	return nil
+}
+
+// ListStaging implements Storage.
+func (f *FS) ListStaging(_ context.Context, prefix string) ([]StagedObject, error) {
+	root := filepath.Join(f.Root, "staging")
+	var out []StagedObject
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		rel, err := filepath.Rel(f.Root, p)
+		if err != nil {
+			return nil
+		}
+		key := filepath.ToSlash(rel)
+		if !strings.HasPrefix(strings.TrimPrefix(key, StagingPrefix), prefix) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		out = append(out, StagedObject{Key: key, Size: info.Size(), ModTime: info.ModTime()})
+		return nil
+	})
+	return out, err
 }
 
 // Delete implements Storage.
@@ -200,6 +307,10 @@ func (f *FS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if method == http.MethodPut {
 		f.put(w, r, p, size, sha)
+		return
+	}
+	if IsStaging(key) {
+		blobErr(w, http.StatusForbidden, "staging objects cannot be downloaded")
 		return
 	}
 	fh, err := os.Open(p)

@@ -45,6 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(EnvAllowGlobalConfig, "1") // the shared test database holds many projects
 	f := &fixture{t: t, st: st, project: fmt.Sprintf("gw%d-%d", time.Now().UnixNano()%1e9, seq.Add(1))}
 	mk := func(acct, side, role string) string {
 		tok, err := st.CreateToken(ctx, f.project, acct+f.project, side, role, "human", time.Hour)

@@ -31,8 +31,7 @@ var safeKey = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
 
 // latestRaw is a SQL expression for the latest raw JSON value of a key of entity alias.id (keys are validated).
 func latestRaw(alias, key string) string {
-	return "(SELECT d.new_v FROM delta d WHERE d.entity_id = " + alias + ".id AND d.k = '" + key +
-		"' AND d.event_id = (SELECT MAX(d2.event_id) FROM delta d2 WHERE d2.entity_id = d.entity_id AND d2.k = d.k))"
+	return "(SELECT l.v FROM entity_latest l WHERE l.entity_id = " + alias + ".id AND l.k = '" + key + "')"
 }
 
 func latestText(alias, key string) string { return "JSON_UNQUOTE(" + latestRaw(alias, key) + ")" }

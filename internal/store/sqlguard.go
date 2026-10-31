@@ -13,8 +13,11 @@ var PublicViews = map[string]bool{
 	"workflow_stages": true, "stage_distribution": true, "open_items": true,
 }
 
-// TODO(M2): replace this hand-rolled conservative checker with a real SQL parser
-// (e.g. vitess sqlparser / TiDB parser) and do the project rewrite on the AST.
+// The guard is an ALLOWLIST checker, not a blacklist: a statement is accepted only if it is a single
+// SELECT whose FROM/JOIN items are bare public view names (optionally aliased), whose function calls
+// are on a fixed list, and whose tokens belong to a small known alphabet. Anything it does not
+// understand is rejected. Defence in depth: run queries over a SELECT-only DB user (OPENETL_QUERY_DSN,
+// scripts/create-query-user.sql).
 
 type sqlTok struct {
 	kind       byte // 'w' word, 'q' backtick ident, 's' string, 'n' number, 'p' punct
@@ -22,28 +25,54 @@ type sqlTok struct {
 	start, end int
 }
 
+// deniedWords may not appear anywhere (also as column names; quote-free).
 var deniedWords = map[string]bool{
-	"INTO": true, "OUTFILE": true, "DUMPFILE": true, "LOAD_FILE": true, "FOR": true, "LOCK": true,
-	"SLEEP": true, "BENCHMARK": true, "GET_LOCK": true, "RELEASE_LOCK": true, "IS_FREE_LOCK": true,
-	"IS_USED_LOCK": true, "MASTER_POS_WAIT": true, "INFORMATION_SCHEMA": true, "PERFORMANCE_SCHEMA": true,
-	"MYSQL": true, "SYS": true, "HANDLER": true, "PROCEDURE": true, "LOAD": true, "SET": true, "WITH": true,
-	"EXEC": true, "EXECUTE": true, "PREPARE": true, "CALL": true, "DO": true,
+	"INTO": true, "OUTFILE": true, "DUMPFILE": true, "FOR": true, "LOCK": true, "SET": true, "WITH": true,
+	"INFORMATION_SCHEMA": true, "PERFORMANCE_SCHEMA": true, "MYSQL": true, "SYS": true,
+	"HANDLER": true, "PROCEDURE": true, "LOAD": true, "EXEC": true, "EXECUTE": true, "PREPARE": true,
+	"CALL": true, "DO": true, "UNION": true, "INTERSECT": true, "EXCEPT": true, "TABLE": true, "VALUES": true,
+	"VALUE": true, "ROW": true, "LATERAL": true, "WINDOW": true, "OVER": true, "PARTITION": true,
+	"USE": true, "IGNORE": true, "FORCE": true, "STRAIGHT_JOIN": true, "DUAL": true, "EXISTS": true,
+	"ANY": true, "SOME": true, "RETURNING": true,
 }
 
-var fromEnders = map[string]bool{
-	"WHERE": true, "GROUP": true, "HAVING": true, "ORDER": true, "LIMIT": true, "UNION": true,
-	"WINDOW": true, "OFFSET": true, "INTERSECT": true, "EXCEPT": true,
+// allowedFuncs are the only names that may be followed by '('. All are deterministic and side-effect free.
+var allowedFuncs = map[string]bool{
+	"COUNT": true, "SUM": true, "MIN": true, "MAX": true, "AVG": true, "COALESCE": true, "IFNULL": true, "IF": true,
+	"CONCAT": true, "CONCAT_WS": true, "LOWER": true, "UPPER": true, "LENGTH": true, "SUBSTRING": true, "SUBSTR": true,
+	"TRIM": true, "LTRIM": true, "RTRIM": true, "ROUND": true, "DATE": true, "DATE_FORMAT": true,
+	"JSON_EXTRACT": true, "JSON_UNQUOTE": true, "JSON_VALUE": true, "JSON_LENGTH": true, "JSON_CONTAINS": true,
+	"CAST": true, "NULLIF": true, "ABS": true, "FLOOR": true, "CEIL": true, "CEILING": true, "LEFT": true,
+	"RIGHT": true, "REPLACE": true, "GREATEST": true, "LEAST": true, "YEAR": true, "MONTH": true, "DAY": true,
+	"HOUR": true, "DATEDIFF": true, "GROUP_CONCAT": true,
 }
+
+// keywordsBeforeParen may be followed by '(' without being function calls.
+var keywordsBeforeParen = map[string]bool{
+	"IN": true, "AND": true, "OR": true, "NOT": true, "XOR": true, "ON": true, "USING": true, "WHERE": true,
+	"HAVING": true, "WHEN": true, "THEN": true, "ELSE": true, "CASE": true, "BY": true, "AS": true, "LIKE": true,
+	"REGEXP": true, "RLIKE": true, "BETWEEN": true, "IS": true, "DISTINCT": true, "ALL": true, "SELECT": true,
+	"CHAR": true, "DECIMAL": true, "DATETIME": true, "TIME": true, "DIV": true, "MOD": true, "LIMIT": true,
+	"OFFSET": true, "ASC": true, "DESC": true, "END": true,
+}
+
+// fromEnders end the FROM clause (depth 0).
+var fromEnders = map[string]bool{"WHERE": true, "GROUP": true, "HAVING": true, "ORDER": true, "LIMIT": true, "OFFSET": true}
 
 var aliasStoppers = map[string]bool{
-	"WHERE": true, "GROUP": true, "HAVING": true, "ORDER": true, "LIMIT": true, "UNION": true, "JOIN": true,
-	"INNER": true, "LEFT": true, "RIGHT": true, "CROSS": true, "NATURAL": true, "STRAIGHT_JOIN": true,
-	"FULL": true, "OUTER": true, "ON": true, "USING": true, "WINDOW": true, "OFFSET": true, "INTERSECT": true,
-	"EXCEPT": true, "FOR": true, "USE": true, "IGNORE": true, "FORCE": true, "PARTITION": true,
+	"WHERE": true, "GROUP": true, "HAVING": true, "ORDER": true, "LIMIT": true, "JOIN": true,
+	"INNER": true, "LEFT": true, "RIGHT": true, "CROSS": true, "NATURAL": true, "FULL": true, "OUTER": true,
+	"ON": true, "USING": true, "OFFSET": true,
 }
+
+const allowedPunct = "(),.*+-/%=<>!|&^~"
 
 func invalidSQL(format string, args ...any) error {
 	return core.NewError(core.StatusInvalidArgument, "INVALID_QUERY", format, args...)
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c >= 0x80
 }
 
 func tokenizeSQL(s string) ([]sqlTok, error) {
@@ -54,14 +83,15 @@ func tokenizeSQL(s string) ([]sqlTok, error) {
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			i++
-		case c == '#' || (c == '-' && i+1 < len(s) && s[i+1] == '-') || (c == '/' && i+1 < len(s) && s[i+1] == '*'):
+		case c == '#' || (c == '-' && i+1 < len(s) && s[i+1] == '-') || (c == '/' && i+1 < len(s) && s[i+1] == '*') || (c == '*' && i+1 < len(s) && s[i+1] == '/'):
 			return nil, invalidSQL("comments are not allowed")
-		case c == '\'' || c == '"':
+		case c == '"':
+			return nil, invalidSQL("double-quoted strings are not allowed; use single quotes")
+		case c == '\'':
 			j := i + 1
 			for j < len(s) {
 				if s[j] == '\\' {
-					j += 2
-					continue
+					return nil, invalidSQL("backslashes are not allowed in string literals")
 				}
 				if s[j] == c {
 					if j+1 < len(s) && s[j+1] == c { // doubled quote
@@ -82,40 +112,48 @@ func tokenizeSQL(s string) ([]sqlTok, error) {
 			if j < 0 {
 				return nil, invalidSQL("unterminated quoted identifier")
 			}
-			out = append(out, sqlTok{'q', s[i+1 : i+1+j], i, i + j + 2})
-			i = i + j + 2
+			end := i + j + 2
+			if end < len(s) && s[end] == '`' {
+				return nil, invalidSQL("escaped backticks are not allowed")
+			}
+			out = append(out, sqlTok{'q', s[i+1 : i+1+j], i, end})
+			i = end
 		case c >= '0' && c <= '9':
 			j := i
 			for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == '.' || s[j] == 'e' || s[j] == 'E') {
 				j++
 			}
+			if j < len(s) && isWordByte(s[j]) {
+				return nil, invalidSQL("malformed number")
+			}
 			out = append(out, sqlTok{'n', s[i:j], i, j})
 			i = j
-		case c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80:
+		case isWordByte(c):
 			j := i
-			for j < len(s) && (s[j] == '_' || s[j] == '$' || (s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= '0' && s[j] <= '9') || s[j] >= 0x80) {
+			for j < len(s) && isWordByte(s[j]) {
 				j++
 			}
 			out = append(out, sqlTok{'w', s[i:j], i, j})
 			i = j
 		case c == '@':
 			return nil, invalidSQL("variables are not allowed")
-		case c == '\\':
-			return nil, invalidSQL("unexpected backslash")
 		case c == ';':
 			// only a single trailing ';' is tolerated
-			rest := strings.TrimSpace(s[i+1:])
-			if rest != "" {
+			if strings.TrimSpace(s[i+1:]) != "" {
 				return nil, invalidSQL("only one statement is allowed")
 			}
 			i = len(s)
-		default:
+		case strings.IndexByte(allowedPunct, c) >= 0:
 			out = append(out, sqlTok{'p', string(c), i, i + 1})
 			i++
+		default:
+			return nil, invalidSQL("unexpected character %q", string(c))
 		}
 	}
 	return out, nil
 }
+
+func isP(t sqlTok, p string) bool { return t.kind == 'p' && t.text == p }
 
 // GuardQuery verifies that sqlText is exactly one read-only SELECT over the public views and returns
 // it rewritten so every view reference is restricted to the project (derived table + project_id filter).
@@ -139,65 +177,119 @@ func GuardQuery(sqlText string, projectID int64) (string, error) {
 		text       string
 	}
 	var repls []repl
-	inFrom := []bool{false}
-	expect := false
+	depth := 0
+	seenFrom, inFrom := false, false
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
 		up := strings.ToUpper(t.text)
-		d := len(inFrom) - 1
-		if t.kind == 'w' && deniedWords[up] {
-			return "", invalidSQL("keyword %s is not allowed", up)
+		var prev, next sqlTok
+		if i > 0 {
+			prev = toks[i-1]
 		}
-		if expect && (t.kind == 'w' || t.kind == 'q') {
-			expect = false
-			name := strings.ToLower(t.text)
-			if i+1 < len(toks) && toks[i+1].kind == 'p' && toks[i+1].text == "." {
-				return "", invalidSQL("qualified table names are not allowed; query the public views only")
+		if i+1 < len(toks) {
+			next = toks[i+1]
+		}
+		hasNext := i+1 < len(toks)
+		switch t.kind {
+		case 'w':
+			if deniedWords[up] {
+				return "", invalidSQL("keyword %s is not allowed", up)
 			}
-			if !PublicViews[name] {
-				return "", invalidSQL("unknown view %q; available: %s", t.text, strings.Join(sortedKeys(PublicViews), ", "))
+			if i > 0 && up == "SELECT" {
+				return "", invalidSQL("subqueries are not allowed")
 			}
-			hasAlias := false
-			if i+1 < len(toks) {
-				n := toks[i+1]
-				if n.kind == 'w' && (strings.EqualFold(n.text, "AS") || !aliasStoppers[strings.ToUpper(n.text)]) {
-					hasAlias = true
-				} else if n.kind == 'q' {
-					hasAlias = true
+			if hasNext && isP(next, "(") {
+				if isP(prev, ".") {
+					return "", invalidSQL("qualified function calls are not allowed")
+				}
+				if !allowedFuncs[up] && !keywordsBeforeParen[up] {
+					return "", invalidSQL("function %s is not allowed", up)
 				}
 			}
-			sub := "(SELECT * FROM `" + name + "` WHERE project_id = " + strconv.FormatInt(projectID, 10) + ")"
-			if !hasAlias {
-				sub += " AS `" + name + "`"
+			if up == "FROM" || up == "JOIN" {
+				if depth != 0 {
+					return "", invalidSQL("%s is only allowed at the top level", up)
+				}
+				if up == "FROM" {
+					if seenFrom {
+						return "", invalidSQL("only one FROM clause is allowed")
+					}
+					seenFrom, inFrom = true, true
+				} else if !seenFrom {
+					return "", invalidSQL("JOIN without FROM")
+				}
+				// the next token must be a bare public view name
+				if !hasNext || (next.kind != 'w' && next.kind != 'q') {
+					return "", invalidSQL("expected a view name after %s (no parentheses or subqueries)", up)
+				}
+				name := strings.ToLower(next.text)
+				if next.kind == 'w' && (deniedWords[strings.ToUpper(next.text)] || aliasStoppers[strings.ToUpper(next.text)]) {
+					return "", invalidSQL("expected a view name after %s", up)
+				}
+				if i+2 < len(toks) && (isP(toks[i+2], ".") || isP(toks[i+2], "(")) {
+					return "", invalidSQL("qualified table names are not allowed; query the public views only")
+				}
+				if !PublicViews[name] {
+					return "", invalidSQL("unknown view %q; available: %s", next.text, strings.Join(sortedKeys(PublicViews), ", "))
+				}
+				// optional alias: [AS] ident
+				j := i + 2
+				hasAlias := false
+				if j < len(toks) && toks[j].kind == 'w' && strings.EqualFold(toks[j].text, "AS") {
+					if j+1 >= len(toks) || (toks[j+1].kind != 'w' && toks[j+1].kind != 'q') {
+						return "", invalidSQL("expected an alias after AS")
+					}
+					hasAlias = true
+					j += 2
+				} else if j < len(toks) && toks[j].kind == 'q' {
+					hasAlias = true
+					j++
+				} else if j < len(toks) && toks[j].kind == 'w' && !aliasStoppers[strings.ToUpper(toks[j].text)] {
+					hasAlias = true
+					j++
+				}
+				if hasAlias {
+					a := toks[j-1]
+					if a.kind == 'w' && (deniedWords[strings.ToUpper(a.text)] || strings.EqualFold(a.text, "SELECT") || strings.EqualFold(a.text, "FROM")) {
+						return "", invalidSQL("invalid alias %q", a.text)
+					}
+					if j < len(toks) && (isP(toks[j], "(") || isP(toks[j], ".")) {
+						return "", invalidSQL("unexpected token after table alias")
+					}
+				}
+				sub := "(SELECT * FROM `" + name + "` WHERE project_id = " + strconv.FormatInt(projectID, 10) + ")"
+				if !hasAlias {
+					sub += " AS `" + name + "`"
+				}
+				repls = append(repls, repl{next.start, next.end, sub})
+				i++ // the view name token is consumed (alias tokens are plain identifiers)
+				continue
 			}
-			repls = append(repls, repl{t.start, t.end, sub})
-			continue
-		}
-		expect = false
-		switch {
-		case t.kind == 'w' && up == "FROM":
-			inFrom[d] = true
-			expect = true
-		case t.kind == 'w' && (up == "JOIN" || up == "STRAIGHT_JOIN"):
-			expect = true
-		case t.kind == 'p' && t.text == "," && inFrom[d]:
-			expect = true
-		case t.kind == 'w' && fromEnders[up]:
-			inFrom[d] = false
-		case t.kind == 'p' && t.text == "(":
-			inFrom = append(inFrom, false)
-		case t.kind == 'p' && t.text == ")":
-			if len(inFrom) == 1 {
-				return "", invalidSQL("unbalanced parentheses")
+			if fromEnders[up] && depth == 0 {
+				inFrom = false
 			}
-			inFrom = inFrom[:len(inFrom)-1]
+		case 'q':
+			if hasNext && isP(next, "(") {
+				return "", invalidSQL("quoted function names are not allowed")
+			}
+		case 'p':
+			switch t.text {
+			case "(":
+				depth++
+			case ")":
+				depth--
+				if depth < 0 {
+					return "", invalidSQL("unbalanced parentheses")
+				}
+			case ",":
+				if inFrom && depth == 0 {
+					return "", invalidSQL("comma joins are not allowed; use JOIN ... ON")
+				}
+			}
 		}
 	}
-	if len(inFrom) != 1 {
+	if depth != 0 {
 		return "", invalidSQL("unbalanced parentheses")
-	}
-	if expect {
-		return "", invalidSQL("expected a view name")
 	}
 	var b strings.Builder
 	last := 0

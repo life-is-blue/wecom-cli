@@ -19,6 +19,32 @@ const MaxObjectSize int64 = 100 << 20
 // ErrNotFound is returned by Stat/Delete when the object does not exist.
 var ErrNotFound = errors.New("storage: object not found")
 
+// StagingPrefix is the key prefix of uploads that are not registered yet. Clients PUT only to staging
+// keys; registration verifies the bytes and Commits them to an immutable final key, so a (replayed)
+// upload URL can never overwrite registered evidence. Downloads serve only committed keys.
+const StagingPrefix = "staging/"
+
+// StagingKey maps a final key to its staging key.
+func StagingKey(final string) string { return StagingPrefix + final }
+
+// IsStaging reports whether key is a staging key.
+func IsStaging(key string) bool { return strings.HasPrefix(key, StagingPrefix) }
+
+var (
+	// ErrSizeMismatch and ErrHashMismatch are returned by Verify/Commit when the staged bytes differ
+	// from what the caller registered. ErrExists is returned when the final key is already taken.
+	ErrSizeMismatch = errors.New("storage: size mismatch")
+	ErrHashMismatch = errors.New("storage: sha256 mismatch")
+	ErrExists       = errors.New("storage: object exists")
+)
+
+// StagedObject is a staging blob reported by ListStaging (Key is the full staging key).
+type StagedObject struct {
+	Key     string
+	Size    int64
+	ModTime time.Time
+}
+
 // Presigned is a time-limited URL plus headers the client must send with it.
 type Presigned struct {
 	URL     string
@@ -43,7 +69,16 @@ type Storage interface {
 	PresignPut(ctx context.Context, key string, o PutOptions, ttl time.Duration) (*Presigned, error)
 	// PresignGet returns a download URL; filename is the suggested download name.
 	PresignGet(ctx context.Context, key, filename string, ttl time.Duration) (*Presigned, error)
+	// Stat reports the size of an object; its SHA256 is only what the client declared (untrusted).
 	Stat(ctx context.Context, key string) (*Object, error)
+	// Verify checks the staged object against the registered size and sha256, which the backend
+	// computes itself from the stored bytes (ErrNotFound, ErrSizeMismatch, ErrHashMismatch).
+	Verify(ctx context.Context, stagingKey string, size int64, sha256 string) error
+	// Commit verifies like Verify and then moves the staged object to finalKey, which must not exist
+	// (ErrExists). The staged object cannot change between verification and the move.
+	Commit(ctx context.Context, stagingKey, finalKey string, size int64, sha256 string) error
+	// ListStaging lists staging objects whose key after StagingPrefix starts with prefix.
+	ListStaging(ctx context.Context, prefix string) ([]StagedObject, error)
 	Delete(ctx context.Context, key string) error
 }
 

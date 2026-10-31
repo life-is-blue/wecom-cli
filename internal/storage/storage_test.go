@@ -70,6 +70,9 @@ func TestFSRoundTrip(t *testing.T) {
 	if err != nil || o.Size != int64(len(data)) || o.SHA256 != sha {
 		t.Fatalf("stat %+v %v", o, err)
 	}
+	if _, err := f.PresignGet(ctx, "1/2/obj", "x", time.Minute); err != nil {
+		t.Fatal(err)
+	}
 	get, _ := f.PresignGet(ctx, "1/2/obj", `evil"name/../a.txt`, time.Minute)
 	r := do(t, "GET", srv.URL+get.URL, "")
 	if r.StatusCode != 200 || !strings.Contains(r.Header.Get("Content-Disposition"), `attachment; filename="a.txt"`) {
@@ -206,5 +209,76 @@ func TestFromEnv(t *testing.T) {
 	env["OPENETL_STORAGE"] = "nope"
 	if _, err := FromEnv(get); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+func TestFSStagingCommit(t *testing.T) {
+	f, srv, _ := fsFixture(t)
+	ctx := context.Background()
+	data := "evidence bytes"
+	sum := sha256.Sum256([]byte(data))
+	sha := hex.EncodeToString(sum[:])
+	final := "7/8/blob"
+	stg := StagingKey(final)
+	put := func(body string) string {
+		p, err := f.PresignPut(ctx, stg, PutOptions{Size: int64(len(body))}, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := do(t, "PUT", srv.URL+p.URL, body); r.StatusCode != 200 {
+			t.Fatalf("put %d", r.StatusCode)
+		}
+		return p.URL
+	}
+	url1 := put(data)
+	if _, err := f.PresignGet(ctx, stg, "x", time.Minute); err == nil {
+		t.Fatal("staging key is downloadable")
+	}
+	if err := f.Verify(ctx, stg, int64(len(data)), strings.Repeat("0", 64)); err != ErrHashMismatch {
+		t.Fatalf("hash: %v", err)
+	}
+	if err := f.Verify(ctx, stg, 3, sha); err != ErrSizeMismatch {
+		t.Fatalf("size: %v", err)
+	}
+	if _, err := f.Stat(ctx, stg); err != nil { // a failed verification leaves the upload in place
+		t.Fatal(err)
+	}
+	if err := f.Commit(ctx, stg, final, int64(len(data)), strings.Repeat("0", 64)); err != ErrHashMismatch {
+		t.Fatalf("commit hash: %v", err)
+	}
+	if _, err := f.Stat(ctx, stg); err != nil {
+		t.Fatalf("mismatch must keep the staged upload: %v", err)
+	}
+	if err := f.Commit(ctx, stg, final, int64(len(data)), sha); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Stat(ctx, stg); err != ErrNotFound {
+		t.Fatalf("staging not consumed: %v", err)
+	}
+	// the old PUT URL can only create a new staging object; the committed blob is untouched
+	put("tampered!!!!!!")
+	if o, err := f.Stat(ctx, final); err != nil || o.SHA256 != sha {
+		t.Fatalf("committed blob changed: %+v %v", o, err)
+	}
+	_ = url1
+	// committed keys are immutable
+	if err := f.Commit(ctx, stg, final, 14, func() string { s := sha256.Sum256([]byte("tampered!!!!!!")); return hex.EncodeToString(s[:]) }()); err != ErrExists {
+		t.Fatalf("overwrite: %v", err)
+	}
+	// download works for the final key only
+	g, err := f.PresignGet(ctx, final, "a.txt", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := do(t, "GET", srv.URL+g.URL, ""); r.StatusCode != 200 {
+		t.Fatalf("get %d", r.StatusCode)
+	}
+	// listing and cleanup
+	list, err := f.ListStaging(ctx, "7/")
+	if err != nil || len(list) != 1 || list[0].Key != stg || list[0].Size != 14 {
+		t.Fatalf("list %+v %v", list, err)
+	}
+	if l, _ := f.ListStaging(ctx, "9/"); len(l) != 0 {
+		t.Fatal("prefix filter")
 	}
 }
