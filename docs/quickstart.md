@@ -38,7 +38,8 @@ for s in development deployment verify; do OPENETL_TOKEN=$EDT openetl stage adva
 OPENETL_TOKEN=$CUS openetl stage advance $WF --stage accept            # only the customer side accepts
 OPENETL_TOKEN=$CUS openetl stage regress $WF --stage accept --reason rej_row_count
 OPENETL_TOKEN=$EDT openetl comment add $WF --kind issue --body "target schema permission missing"   # -> BLOCKED
-openetl scope set WF-000002 --to out --reason obsolete                 # admin: out of scope
+LAST=$(openetl query "SELECT code FROM workflows ORDER BY id DESC LIMIT 1" | python3 -c "import sys,json;print(json.load(sys.stdin)['rows'][0][0])")
+openetl scope set $LAST --to out --reason obsolete                     # admin: out of scope (codes are not consecutive: tasks share the id space)
 ```
 
 ## 5. Management report

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/life-is-blue/openetl-cli/internal/core"
@@ -103,9 +104,16 @@ func (s *Store) MemberOf(ctx context.Context, project, userName string) (*Member
 
 // CreateToken (admin tool) creates project/account/member when missing and returns a new plaintext
 // token. Only the hash is stored.
+// projectSlugRe is the project id format of the API (docs/m0-naming-spec.md): the database collation is
+// case-insensitive, so an uppercase id would silently alias a lowercase one.
+var projectSlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
+
 func (s *Store) CreateToken(ctx context.Context, project, account, side, role string, kind string, ttl time.Duration) (string, error) {
 	if kind == "" {
 		kind = "human"
+	}
+	if !projectSlugRe.MatchString(project) {
+		return "", core.NewError(core.StatusInvalidArgument, "INVALID_PROJECT_ID", "project id must be a lowercase slug (letters, digits, hyphens; starts with a letter; 2-63 chars)")
 	}
 	if kind == "agent" && role == "admin" {
 		return "", core.NewError(core.StatusFailedPrecondition, "AGENT_CANNOT_BE_ADMIN", "agent accounts cannot be admin")
