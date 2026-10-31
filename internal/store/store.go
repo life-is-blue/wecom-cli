@@ -92,7 +92,7 @@ func (s *Store) now() time.Time {
 
 // Migrate applies the embedded migrations that are not yet recorded in schema_migrations.
 func (s *Store) Migrate(ctx context.Context) ([]string, error) {
-	// serialize concurrent migrators (several gateways, parallel tests) with an advisory lock
+	// serialize concurrent migrators (several servers, parallel tests) with an advisory lock
 	conn, err := s.DB.Conn(ctx)
 	if err != nil {
 		return nil, err

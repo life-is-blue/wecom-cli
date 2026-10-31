@@ -1,4 +1,4 @@
-package gateway
+package server
 
 import (
 	"bytes"
@@ -15,10 +15,10 @@ import (
 	"github.com/life-is-blue/openetl-cli/internal/storage"
 )
 
-// withStorage returns a copy of the fixture whose gateway uses a temp-dir fs backend.
+// withStorage returns a copy of the fixture whose server uses a temp-dir fs backend.
 func withStorage(t *testing.T, f *fixture) *fixture {
 	t.Helper()
-	fs, err := storage.NewFS(t.TempDir(), []byte("gateway-test-secret"), "")
+	fs, err := storage.NewFS(t.TempDir(), []byte("server-test-secret"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

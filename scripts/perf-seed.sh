@@ -2,7 +2,7 @@
 # Seeds a FRESH database with a realistic load for performance measurements and prints nothing but progress.
 #   PERF_DB=openetl_perf2 scripts/perf-seed.sh
 # Creates (dropping any previous copy!) database $PERF_DB, applies migrations 0001..$PERF_MAX_MIGRATION
-# (default 3, i.e. the schema BEFORE entity_latest; run `openetl-gateway migrate` afterwards to get the
+# (default 3, i.e. the schema BEFORE entity_latest; run `openetl-server migrate` afterwards to get the
 # new schema, which backfills entity_latest from delta), then inserts project `perf` with
 #   PERF_WORKFLOWS (3000) workflows, PERF_TASKS (10000) tasks linked via in.<workflow> keys,
 #   ~2 comments per workflow and stage advances for ~60% of the workflows.

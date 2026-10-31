@@ -1,4 +1,4 @@
-package gateway
+package server
 
 import (
 	"net/http"
@@ -136,7 +136,7 @@ func (s *Server) updateConfig(q *request) error {
 		}
 		if n > 1 {
 			return core.NewError(core.StatusPermissionDenied, "GLOBAL_CONFIG_SHARED",
-				"the configuration is shared by all %d projects of this instance; updating it is disabled (set %s=1 on the gateway to allow it)", n, EnvAllowGlobalConfig)
+				"the configuration is shared by all %d projects of this instance; updating it is disabled (set %s=1 on the server to allow it)", n, EnvAllowGlobalConfig)
 		}
 	}
 	mask, err := parseMask(q.query("update_mask"), []string{"stages", "reasons", "rules", "settings"})

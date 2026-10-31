@@ -1,6 +1,6 @@
-// Package gateway is the HTTP layer: custom router (for ":verb" suffixes), bearer auth,
+// Package server is the HTTP layer: custom router (for ":verb" suffixes), bearer auth,
 // role gates and AIP-193 errors. All writes go through store.Apply.
-package gateway
+package server
 
 import (
 	"encoding/json"
@@ -36,7 +36,7 @@ type Server struct {
 	quota    uploadQuota
 }
 
-// New creates the gateway handler.
+// New creates the server handler.
 func New(st *store.Store, lg *log.Logger) *Server {
 	if lg == nil {
 		lg = log.Default()
@@ -126,7 +126,7 @@ func notFound(what string) *core.Error {
 }
 
 func unimplemented(what string) *core.Error {
-	return core.NewError(core.StatusUnimplemented, "UNIMPLEMENTED", "%s is not available in this version of the gateway", what)
+	return core.NewError(core.StatusUnimplemented, "UNIMPLEMENTED", "%s is not available in this version of the server", what)
 }
 
 // ---------------------------------------------------------------- routing

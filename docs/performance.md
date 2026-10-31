@@ -25,8 +25,8 @@ re-materialised the grouped derived table without a usable index (quadratic). On
   identical). The views stay mergeable, so a query for one project or one workflow touches only its rows.
 * Store code uses `entity_latest` for current values (`loadEntities`, validation `txEnv.latest`, list filters/sorting,
   event scope, attachment storage-key check). **Time travel (`as_of`) still reads `delta` directly** with its own query.
-* Operations: `openetl-gateway admin verify-latest` compares the cache with a recomputation from `delta`
-  (prints mismatches, exit 1) and `openetl-gateway admin rebuild-latest` empties and refills it in one transaction
+* Operations: `openetl-server admin verify-latest` compares the cache with a recomputation from `delta`
+  (prints mismatches, exit 1) and `openetl-server admin rebuild-latest` empties and refills it in one transaction
   (`DELETE` + `INSERT ... SELECT`, not `TRUNCATE`, so it is transactional; run it in a quiet period).
   If the app account has restricted grants, it needs `INSERT, UPDATE, DELETE, SELECT` on `entity_latest`.
 * Not touched: `loadImportExisting` (import diff) folds the whole `delta` history of the project on purpose
@@ -38,7 +38,7 @@ re-materialised the grouped derived table without a usable index (quadratic). On
 # fresh database with 3000 workflows, 10000 tasks, ~6000 comments, stage advances (old schema, 0001-0003)
 PERF_DB=openetl_perf_new scripts/perf-seed.sh
 # after: apply migration 0004 (backfills entity_latest from delta)
-OPENETL_DB_DSN='root@tcp(127.0.0.1:33306)/openetl_perf_new' openetl-gateway migrate
+OPENETL_DB_DSN='root@tcp(127.0.0.1:33306)/openetl_perf_new' openetl-server migrate
 PERF_DB=openetl_perf_new scripts/perf-measure.sh                      # views via mysql, server-side 60 s limit
 OPENETL_PERF_DSN='root@tcp(127.0.0.1:33306)/openetl_perf_new' go test -tags perf -run TestPerf -v ./internal/store   # store/API level
 ```
@@ -107,5 +107,5 @@ Same seed as above (3000 workflows, 10000 tasks, 6000 comments, 66793 events). T
 API level (no docker overhead), medians: workflows list page of 100 69 ms; filter by stage+health 215 ms;
 workflow get 39 ms; tasks list page 9 ms; comments list 47 ms; events list 73 ms.
 Conclusion: the slow-view problem was not specific to MariaDB; the cache table is required on MySQL 8.0 too.
-`openetl-gateway admin verify-latest` reports `entity_latest matches delta` after migrating the seeded database.
+`openetl-server admin verify-latest` reports `entity_latest matches delta` after migrating the seeded database.
 Full test suite (`go test -count=1 -p 1 ./...`) and `scripts/demo.sh` also pass on MySQL 8.0.46.

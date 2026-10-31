@@ -18,7 +18,7 @@ Tokens are account-wide, so token power equals power over every project of the a
   otherwise).
 * Token create / list / revoke (`/v1/accounts/{a}/tokens`): allowed only if the caller administers **every** project the target
   belongs to (or the target is the caller and the caller is an admin somewhere). An account without memberships cannot be managed.
-* The operator tool `openetl-gateway admin create-token` bypasses these rules by design (it needs database access).
+* The operator tool `openetl-server admin create-token` bypasses these rules by design (it needs database access).
 
 ## Query isolation
 
@@ -33,17 +33,17 @@ Tokens are account-wide, so token power equals power over every project of the a
 2. **Read-only transaction**, `page_size` <= 1000, response <= 8 MiB (`RESULT_TOO_LARGE`), 15 s context deadline and a server-side
    statement timeout (MySQL `MAX_EXECUTION_TIME`, MariaDB `max_statement_time`); the query is refused if neither can be set.
 3. **Separate database user** (`OPENETL_QUERY_DSN`, `scripts/create-query-user.sql`): `SELECT` on the seven views only. Without
-   the variable the main DSN credentials are used and the gateway logs a warning at startup. Production deployments should set it.
+   the variable the main DSN credentials are used and the server logs a warning at startup. Production deployments should set it.
 4. **Dedicated, small pool and concurrency limits.** User SQL always runs on its own pool (`QueryPoolSize` = 8 connections), also
    when it reuses the main DSN, so it cannot starve authentication and writes (pool of 20). Concurrent queries are capped per
    account (`OPENETL_QUERY_MAX_PER_ACCOUNT`, default 3) and in total (`OPENETL_QUERY_MAX_TOTAL`, default 6); beyond that the
    request is refused immediately (no queueing) with `429 RESOURCE_EXHAUSTED` (`QUERY_TOO_MANY_CONCURRENT` / `QUERY_SERVER_BUSY`)
-   and a `Retry-After` header. The caps are per gateway process.
+   and a `Retry-After` header. The caps are per server process.
 5. **Guard extras:** a `JOIN` needs `ON`/`USING` on real columns (no `CROSS`/`NATURAL`/bare `JOIN`, no constant `ON 1`, `ON true`,
    `ON 1=1`, `... OR 1`); system-information words (`current_user`, `session_user`, `system_user`, `user`, `database`, `schema`,
    `version`, `connection_id`, `last_insert_id`, `row_count`, `found_rows`, ...) and `@variables` are rejected, with or without
    parentheses. Database errors are never echoed: `QUERY_FAILED` carries only the numeric database error code for errors caused
-   by the SQL text; the raw error goes to the gateway log.
+   by the SQL text; the raw error goes to the server log.
 
 ## Attachments and storage
 
@@ -58,7 +58,7 @@ Tokens are account-wide, so token power equals power over every project of the a
   registration (`429 RESOURCE_EXHAUSTED`, `PROJECT_STORAGE_QUOTA_EXCEEDED`). Concurrent registrations may overshoot it slightly
   (check, then commit).
 * Pending uploads per project are capped (`MaxPendingUploads` = 50, `MaxPendingUploadBytes` = 1 GiB, package variables in
-  `internal/gateway/handlers_attachment.go`); staging objects older than 1 h are deleted at startup and hourly.
+  `internal/server/handlers_attachment.go`); staging objects older than 1 h are deleted at startup and hourly.
 * Signed URLs are built from `OPENETL_PUBLIC_URL` when set; `X-Forwarded-Proto/Host` are honoured only with `OPENETL_TRUST_PROXY=1`.
 
 ## CLI transport
@@ -78,7 +78,7 @@ by older versions have no saved base URL: they stay usable (unbound) and print a
   automated tests (no S3 in CI); only the fs backend is exercised.
 
 * **Config is global.** Stage definitions, reasons, rules and settings have no `project_id`. Phase 1 is one project per instance:
-  config `PATCH` is admin-only and is refused (`GLOBAL_CONFIG_SHARED`) while more than one project exists, unless the gateway
+  config `PATCH` is admin-only and is refused (`GLOBAL_CONFIG_SHARED`) while more than one project exists, unless the server
   runs with `OPENETL_ALLOW_GLOBAL_CONFIG=1`, in which case any project admin edits the rules of all projects.
 * **Import channel skips stage-order validation by design**; importing is admin-only and every import is a reviewable, rollbackable job.
 * **Key-file fallback**: when no OS keyring is available the client keeps the encryption key in a file next to the credentials;

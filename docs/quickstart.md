@@ -5,7 +5,7 @@ Needs Docker, Go 1.24 and python3. About 5 minutes. `scripts/e2e.sh` runs exactl
 ## 1. Start the stack and build the CLI
 
 ```bash
-docker compose up -d --build --wait gateway     # MySQL 8.0 + gateway (migrates on start, restricted query user)
+docker compose up -d --build --wait server     # MySQL 8.0 + server (migrates on start, restricted query user)
 go build -o bin/openetl ./cmd/openetl
 curl -s localhost:18080/healthz                 # {"status":"ok"}
 ```
@@ -15,7 +15,7 @@ curl -s localhost:18080/healthz                 # {"status":"ok"}
 Tokens are shown once; only their hash is stored.
 
 ```bash
-mint() { docker compose exec -T gateway openetl-gateway admin create-token --project acme-dw --account "$1" --side "$2" --role "$3" 2>/dev/null | tail -1; }
+mint() { docker compose exec -T server openetl-server admin create-token --project acme-dw --account "$1" --side "$2" --role "$3" 2>/dev/null | tail -1; }
 ADMIN=$(mint alice delivery admin); EDT=$(mint bob delivery editor); CUS=$(mint carol customer editor)
 export OPENETL_BASE_URL=http://127.0.0.1:18080 OPENETL_PROJECT=acme-dw PATH=$PWD/bin:$PATH
 echo "$ADMIN" | openetl auth login --token-stdin   # stored encrypted on this machine

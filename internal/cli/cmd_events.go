@@ -124,7 +124,7 @@ func (a *App) emitDirect(v any) error {
 }
 
 // fetchTo downloads a (presigned) URL into dst. The API token is only sent to
-// the gateway's own host, never to a foreign storage host.
+// the server's own host, never to a foreign storage host.
 func (a *App) fetchTo(target, dst string) (int64, string, error) {
 	r, err := a.resolve()
 	if err != nil {
@@ -144,7 +144,7 @@ func (a *App) fetchTo(target, dst string) (int64, string, error) {
 	if err := a.checkTransport(u); err != nil {
 		return 0, "", err
 	}
-	// the API token goes only to the gateway's own origin (scheme, host and port all equal)
+	// the API token goes only to the server's own origin (scheme, host and port all equal)
 	sameHost := sameOrigin(u, base)
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {

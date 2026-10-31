@@ -359,7 +359,7 @@ func TestErrorMapping(t *testing.T) {
 		case 400:
 			io.WriteString(w, `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"bad sql"}}`)
 		case 502:
-			io.WriteString(w, `<html>bad gateway</html>`)
+			io.WriteString(w, `<html>bad server</html>`)
 		}
 		return true
 	}

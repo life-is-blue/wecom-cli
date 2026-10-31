@@ -31,7 +31,7 @@ Exit codes: 0 ok, 1 runtime/API error, 2 usage error.
 | `rows.ndjson` (any extension except `.csv`) | One JSON object per line; nested values allowed (for nested `tasks.from`). |
 | `rows.csv` | Header row + flat records (UTF-8, BOM skipped). Every value is a string. |
 | `-` | NDJSON on stdin (`--format csv` for CSV). |
-| `mysql://user[:password]@host[:port]/db` | Read-only scan (`START TRANSACTION READ ONLY`, a single `SELECT`). The table or query comes from the mapping. The password comes from the DSN, otherwise from `OPENETL_SOURCE_PASSWORD`; it is never printed, logged or sent to the gateway (the job's `source` label is the DSN without password unless `source_system` is set). `?tls=true` is passed to the driver. |
+| `mysql://user[:password]@host[:port]/db` | Read-only scan (`START TRANSACTION READ ONLY`, a single `SELECT`). The table or query comes from the mapping. The password comes from the DSN, otherwise from `OPENETL_SOURCE_PASSWORD`; it is never printed, logged or sent to the server (the job's `source` label is the DSN without password unless `source_system` is set). `?tls=true` is passed to the driver. |
 
 ## mapping.yaml
 
@@ -93,7 +93,7 @@ sorted by `source.reference`.
 ### Tasks
 
 Tasks are sent as `ImportRow.tasks` (`{source:{reference,row_hash}, data:{display_name,labels,annotations,assignees}}`, see
-`docs/import-format.md`); the gateway creates them with a primary link to their workflow.
+`docs/import-format.md`); the server creates them with a primary link to their workflow.
 
 * **Nested** (`tasks.from`): NDJSON, or a column holding JSON text (e.g. a mysql JSON column). Each element is an object, e.g.
   `{"id":"t-1","title":"extract","type":"sql"}`; mapped with `reference: id`, `name: title`, `labels: {kind: type}`.

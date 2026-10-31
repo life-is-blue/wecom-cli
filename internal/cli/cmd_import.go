@@ -59,7 +59,7 @@ func (a *App) importStage() *cobra.Command {
 		Use: "stage --from SRC --map mapping.yaml [--source-system NAME]", Short: "Read a source (NDJSON/CSV file, '-' for stdin, mysql://user@host:port/db), map it and stage a job",
 		Long: "Stages rows only; no workflow changes until `import apply`.\n" +
 			"A mysql:// source is scanned read-only; its password comes from the DSN or " + importsrc.EnvSourcePassword +
-			" and is never printed or sent to the gateway.\n--dry-run reads and maps the source locally and reports what would be staged; nothing is sent.",
+			" and is never printed or sent to the server.\n--dry-run reads and maps the source locally and reports what would be staged; nothing is sent.",
 		Args: exactArgs(0),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if from == "" || mapPath == "" {

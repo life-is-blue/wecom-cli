@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: openetl Gateway API
+  title: openetl Server API
   version: 1.0.0
   description: |
     REST+JSON API of the openetl migration progress management platform (AIP style).

@@ -1,10 +1,10 @@
-// Command openetl-gateway serves the openetl REST API.
+// Command openetl-server serves the openetl REST API.
 //
-//	openetl-gateway serve
-//	openetl-gateway migrate
-//	openetl-gateway admin create-token --project P --account A --side delivery|customer --role viewer|editor|admin
-//	openetl-gateway admin rebuild-latest   (rebuild the entity_latest cache from delta, one transaction)
-//	openetl-gateway admin verify-latest    (compare the cache with a recomputation from delta; exit 1 on mismatch)
+//	openetl-server serve
+//	openetl-server migrate
+//	openetl-server admin create-token --project P --account A --side delivery|customer --role viewer|editor|admin
+//	openetl-server admin rebuild-latest   (rebuild the entity_latest cache from delta, one transaction)
+//	openetl-server admin verify-latest    (compare the cache with a recomputation from delta; exit 1 on mismatch)
 //
 // Environment: OPENETL_DB_DSN (go-sql-driver DSN, required), OPENETL_ADDR (default :8080),
 // OPENETL_QUERY_DSN (optional SELECT-only DSN for the query endpoint), OPENETL_PUBLIC_URL,
@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/life-is-blue/openetl-cli/internal/gateway"
+	"github.com/life-is-blue/openetl-cli/internal/server"
 	"github.com/life-is-blue/openetl-cli/internal/store"
 )
 
@@ -36,7 +36,7 @@ func main() {
 }
 
 func usage() error {
-	return errors.New("usage: openetl-gateway serve | migrate | admin rebuild-latest | admin verify-latest | admin create-token --project P --account A --side delivery|customer --role viewer|editor|admin [--kind human|agent] [--ttl 8760h]")
+	return errors.New("usage: openetl-server serve | migrate | admin rebuild-latest | admin verify-latest | admin create-token --project P --account A --side delivery|customer --role viewer|editor|admin [--kind human|agent] [--ttl 8760h]")
 }
 
 func openStore() (*store.Store, error) {
@@ -104,14 +104,14 @@ func serve() error {
 		}
 		log.Println("query endpoint uses OPENETL_QUERY_DSN")
 	} else {
-		log.Println("WARNING: OPENETL_QUERY_DSN is not set; user SQL runs on a separate small pool but with the gateway's main database credentials. " +
+		log.Println("WARNING: OPENETL_QUERY_DSN is not set; user SQL runs on a separate small pool but with the server's main database credentials. " +
 			"Create a SELECT-only user (scripts/create-query-user.sql) and point OPENETL_QUERY_DSN at it.")
 	}
 	addr := os.Getenv("OPENETL_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
-	gw := gateway.New(st, log.Default())
+	gw := server.New(st, log.Default())
 	stopClean := make(chan struct{})
 	defer close(stopClean)
 	go func() { // drop unregistered uploads older than an hour: at startup and hourly
@@ -145,7 +145,7 @@ func serve() error {
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	log.Println("openetl-gateway listening on", addr)
+	log.Println("openetl-server listening on", addr)
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	select {

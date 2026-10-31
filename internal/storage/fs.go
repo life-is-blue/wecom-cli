@@ -22,7 +22,7 @@ import (
 const BlobPrefix = "/v1/blobs/"
 
 // FS stores objects in a local directory. URLs are signed with HMAC-SHA256 over method, key,
-// expiry and (for PUT) size and sha256; the gateway serves them itself via ServeHTTP.
+// expiry and (for PUT) size and sha256; the server serves them itself via ServeHTTP.
 type FS struct {
 	Root    string
 	Secret  []byte

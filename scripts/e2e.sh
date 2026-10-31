@@ -31,11 +31,11 @@ check() { [ "$2" = "$3" ] && echo "   ok  $1 = $2" || fail "$1: got $2, expected
 
 step "build CLI + docker compose up"
 go build -o "$OE" ./cmd/openetl
-docker compose up -d ${E2E_BUILD---build} --wait gateway   # E2E_BUILD= (empty) reuses an existing image >/dev/null
+docker compose up -d ${E2E_BUILD---build} --wait server   # E2E_BUILD= (empty) reuses an existing image >/dev/null
 done_
 
 step "tokens + login"
-mint() { docker compose exec -T gateway openetl-gateway admin create-token --project acme-dw --account "$1" --side "$2" --role "$3" 2>/dev/null | tail -1; }
+mint() { docker compose exec -T server openetl-server admin create-token --project acme-dw --account "$1" --side "$2" --role "$3" 2>/dev/null | tail -1; }
 ADMIN=$(mint alice delivery admin); EDT=$(mint bob delivery editor); CUS=$(mint carol customer editor)
 echo "$ADMIN" | OPENETL_TOKEN= "$OE" auth login --token-stdin >/dev/null
 OPENETL_TOKEN= "$OE" auth status >/dev/null; unset OPENETL_TOKEN

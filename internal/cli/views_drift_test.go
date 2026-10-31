@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/life-is-blue/openetl-cli/internal/store"
 )
 
 // The embedded `openetl views` table is what Agents write queries from, so it must not drift from the real
@@ -16,6 +19,14 @@ func TestViewsJSONMatchesDatabase(t *testing.T) {
 	dsn := os.Getenv("OPENETL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("OPENETL_TEST_DSN not set")
+	}
+	// migrate first so the test does not depend on another package having prepared the database
+	st, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {

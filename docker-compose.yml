@@ -1,4 +1,4 @@
-# MySQL + gateway. One-shot services run in order: migrate -> grants (restricted query user) -> gateway.
+# MySQL + server. One-shot services run in order: migrate -> grants (restricted query user) -> server.
 x-env: &env
   OPENETL_DB_DSN: openetl:openetl-pw@tcp(db:3306)/openetl?parseTime=true&multiStatements=true
 services:
@@ -9,7 +9,7 @@ services:
     volumes: ["dbdata:/var/lib/mysql"]
     healthcheck: {test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot-pw"], interval: 2s, timeout: 3s, retries: 60}
   migrate:
-    image: openetl-gateway:e2e
+    image: openetl-server:e2e
     command: ["migrate"]
     environment: *env
     depends_on: {db: {condition: service_healthy}}
@@ -20,9 +20,9 @@ services:
     volumes: ["./scripts/create-query-user.sql:/grants.sql:ro"]
     depends_on: {migrate: {condition: service_completed_successfully}}
     restart: "no"
-  gateway:
+  server:
     build: .
-    image: openetl-gateway:e2e
+    image: openetl-server:e2e
     environment:
       <<: *env
       OPENETL_QUERY_DSN: openetl_query:query-pw@tcp(db:3306)/openetl

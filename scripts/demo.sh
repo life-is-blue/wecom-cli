@@ -16,15 +16,15 @@ expect_fail() { # expect_fail <reason> <cmd...>: command must exit non-zero and 
   if [ $rc -ne 0 ] && grep -q "$want" <<<"$out"; then echo "  rejected as expected ($want)"; else echo "  FAIL: expected rejection '$want', rc=$rc: $out"; fail=1; fi
 }
 
-( cd "$ROOT" && go build -o "$BIN/openetl" ./cmd/openetl && go build -o "$BIN/openetl-gateway" ./cmd/openetl-gateway ) || exit 1
-"$BIN/openetl-gateway" migrate >/dev/null || exit 1
-DEV=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account alice --side delivery --role admin | tail -1)
-EDT=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account bob --side delivery --role editor | tail -1)
-CUS=$("$BIN/openetl-gateway" admin create-token --project acme-dw --account carol --side customer --role editor | tail -1)
-OPENETL_STORAGE=fs OPENETL_STORAGE_DIR="$BIN/blobs" OPENETL_PUBLIC_URL="$OPENETL_BASE_URL" OPENETL_ADDR=127.0.0.1:$PORT "$BIN/openetl-gateway" serve >"$BIN/gw.log" 2>&1 & GW=$!
+( cd "$ROOT" && go build -o "$BIN/openetl" ./cmd/openetl && go build -o "$BIN/openetl-server" ./cmd/openetl-server ) || exit 1
+"$BIN/openetl-server" migrate >/dev/null || exit 1
+DEV=$("$BIN/openetl-server" admin create-token --project acme-dw --account alice --side delivery --role admin | tail -1)
+EDT=$("$BIN/openetl-server" admin create-token --project acme-dw --account bob --side delivery --role editor | tail -1)
+CUS=$("$BIN/openetl-server" admin create-token --project acme-dw --account carol --side customer --role editor | tail -1)
+OPENETL_STORAGE=fs OPENETL_STORAGE_DIR="$BIN/blobs" OPENETL_PUBLIC_URL="$OPENETL_BASE_URL" OPENETL_ADDR=127.0.0.1:$PORT "$BIN/openetl-server" serve >"$BIN/gw.log" 2>&1 & GW=$!
 trap 'kill $GW 2>/dev/null' EXIT
 for i in $(seq 100); do curl -s -o /dev/null "$OPENETL_BASE_URL/v1/me" && break; sleep 0.1; done
-curl -s -o /dev/null "$OPENETL_BASE_URL/v1/me" || { echo "gateway did not start"; cat "$BIN/gw.log"; exit 1; }
+curl -s -o /dev/null "$OPENETL_BASE_URL/v1/me" || { echo "server did not start"; cat "$BIN/gw.log"; exit 1; }
 
 OE=$BIN/openetl
 as_dev() { OPENETL_TOKEN=$DEV "$OE" "$@"; }

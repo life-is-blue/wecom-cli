@@ -76,7 +76,7 @@ func TestPresignedSamePortGetsNoTokenAcrossSchemes(t *testing.T) {
 	defer storage.Close()
 	f := newFake(t)
 	e := newEnv(t, f)
-	// same hostname (127.0.0.1) as the gateway but another port: no bearer token
+	// same hostname (127.0.0.1) as the server but another port: no bearer token
 	f.h = func(w http.ResponseWriter, r *http.Request, _ string) bool {
 		reply(w, `{"download_url":"`+storage.URL+`/b"}`)
 		return true

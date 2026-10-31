@@ -126,7 +126,7 @@ func TestAttachmentGet(t *testing.T) {
 	if string(b) != "hello evidence" || m["bytes"].(float64) != 14 || len(m["sha256"].(string)) != 64 || storageAuth != "" {
 		t.Fatalf("out=%s file=%q auth=%q", out, b, storageAuth)
 	}
-	// relative URL served by the gateway itself gets the token
+	// relative URL served by the server itself gets the token
 	var gwAuth string
 	f.h = func(w http.ResponseWriter, r *http.Request, _ string) bool {
 		switch {
@@ -146,7 +146,7 @@ func TestAttachmentGet(t *testing.T) {
 	if code, _, _ := e.run("", "attachment", "get", "WF-000123", "at-000009"); code != 2 {
 		t.Fatal("--output required")
 	}
-	// 501 from gateway surfaces as UNIMPLEMENTED exit 1
+	// 501 from server surfaces as UNIMPLEMENTED exit 1
 	f.h = func(w http.ResponseWriter, r *http.Request, _ string) bool {
 		w.WriteHeader(501)
 		reply(w, `{"error":{"code":501,"status":"UNIMPLEMENTED","message":"nope"}}`)
@@ -649,7 +649,7 @@ func TestImportApplyPollsAndRollback(t *testing.T) {
 	if code != 1 || !strings.Contains(errs, "FAILED_PRECONDITION") {
 		t.Fatal(code, errs)
 	}
-	// 501 while the gateway side is missing
+	// 501 while the server side is missing
 	f.h = func(w http.ResponseWriter, r *http.Request, _ string) bool {
 		w.WriteHeader(501)
 		reply(w, `{"error":{"code":501,"status":"UNIMPLEMENTED","message":"not yet"}}`)

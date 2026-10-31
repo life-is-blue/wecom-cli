@@ -124,7 +124,7 @@ func (a *App) newRoot() *cobra.Command {
 	root.CompletionOptions.DisableDefaultCmd = true
 	pf := root.PersistentFlags()
 	pf.StringVar(&a.flagProject, "project", "", "project id (env "+EnvProject+")")
-	pf.StringVar(&a.flagBase, "base-url", "", "gateway base URL (env "+EnvBaseURL+")")
+	pf.StringVar(&a.flagBase, "base-url", "", "server base URL (env "+EnvBaseURL+")")
 	pf.StringVarP(&a.output, "output", "o", "", "write output to FILE instead of stdout")
 	pf.IntVar(&a.pageCount, "page-count", 0, "list/query: fetch up to N pages and print NDJSON (one page per line)")
 

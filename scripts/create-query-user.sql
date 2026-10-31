@@ -1,11 +1,11 @@
--- Read-only database user for the gateway's query endpoint (POST /v1/projects/{p}:query).
+-- Read-only database user for the server's query endpoint (POST /v1/projects/{p}:query).
 --
 -- The SQL guard (internal/store/sqlguard.go) is the first layer; this user is the second: even a
 -- guard bug cannot read api_token, member, delta... because the account has SELECT on the seven
 -- public views and nothing else. The views run with DEFINER rights, so no grant on the base tables
 -- is needed (or wanted).
 --
--- Usage (as a DB admin, after `openetl-gateway migrate`):
+-- Usage (as a DB admin, after `openetl-server migrate`):
 --   1. replace `openetl` (database), 'openetl_query' and the password below
 --   2. mysql -u root -p < scripts/create-query-user.sql
 --   3. export OPENETL_QUERY_DSN='openetl_query:PASSWORD@tcp(db-host:3306)/openetl'

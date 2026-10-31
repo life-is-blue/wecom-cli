@@ -1,6 +1,6 @@
 // Package storage abstracts the blob store behind attachments. Bytes never pass through the API
 // handlers: clients PUT to a presigned URL and GET from another one. Two backends exist:
-// fs (local directory, URLs signed with HMAC and served by the gateway under /v1/blobs/) for
+// fs (local directory, URLs signed with HMAC and served by the server under /v1/blobs/) for
 // development, tests and demos, and s3 (S3-compatible presigned URLs, SigV4).
 package storage
 

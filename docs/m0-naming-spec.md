@@ -5,7 +5,7 @@ Source of truth for the *current* schema/views/rules/CLI: ./contract.txt (extrac
 
 ## Product
 Migration progress management platform. Records progress of migrating workflows/tasks (stages, scope, owners,
-comments with evidence, audit events). It does not execute migrations. Gateway + CLI (`openetl`) in Go, one repo.
+comments with evidence, audit events). It does not execute migrations. Server + CLI (`openetl`) in Go, one repo.
 One instance = one project in phase 1 (keep project_id columns anyway). MySQL 8.0 only. Stage keys:
 development, deployment, verify, accept, dual_run, cutover (NOT developer_validation/user_validation).
 
@@ -64,5 +64,5 @@ ABORTED(ETAG_MISMATCH); FAILED_PRECONDITION(STAGE_ORDER_VIOLATION, REASON_REQUIR
 RESOURCE_EXHAUSTED (rate limit); INTERNAL.
 
 ## Views (query surface; lowercase plural names; DB view names may keep v_ prefix but expose these names via
-## the gateway or create views with these exact names): workflows, tasks, events, comments, workflow_stages,
+## the server or create views with these exact names): workflows, tasks, events, comments, workflow_stages,
 ## stage_distribution, open_items

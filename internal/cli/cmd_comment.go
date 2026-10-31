@@ -203,7 +203,7 @@ func (a *App) putFile(target string, headers *map[string]string, fi fileInfo) er
 	if err := a.checkTransport(u); err != nil {
 		return err
 	}
-	// the API token goes only to the gateway's own origin (scheme, host and port all equal)
+	// the API token goes only to the server's own origin (scheme, host and port all equal)
 	sameHost := sameOrigin(u, base)
 	f, err := os.Open(fi.path)
 	if err != nil {
